@@ -6,7 +6,6 @@
 
 - 新增 `identity_store.py`：用 SQLite 邻接表保存 `alt`（小号）和 `member_of`（成员 -> 群）两类边。
 - 新增 `docs/DESIGN-v0.4.md`：记录 `agent_id` + 身份图的完整设计、函数定义、查询语法、写入策略和测试计划。
-- 新增配置项：`agent_id_prefix`、`group_memory_enabled`、`group_recall_enabled`、`group_memory_limit`、`personal_memory_limit`、`max_scope_nodes`、`identity_db_path`、`group_member_sync_enabled`、`group_sync_ttl`、`admin_ids`、`group_memory_prompt`、`user_memory_prompt`。
 - 新增管理命令：`/mem0 link`、`/mem0 unlink`、`/mem0 join`、`/mem0 leave`、`/mem0 graph`、`/mem0 syncgroup`。
 
 ### Changed
@@ -16,7 +15,7 @@
   - `agent_id = <agent_id_prefix>:<persona_id>`。
   - `user_id = <platform>:user:<sender_id>` 或 `<platform>:group:<group_id>`。
 - 私聊作用域改为「身份分量 + 所有可见群」；群聊作用域改为「当前群 + 身份分量」，不扩散到发言人的其他群。
-- `memory_scope` 标记废弃；`user_id_prefix` 保留为 `agent_id_prefix` 的回退。
+- 配置项收敛为 9 项：`mem0_api_url_base`、`mem0_api_key`、`agent_id_prefix`、`search_threshold`、`search_timeout`、`inject_p_in_p_chat`、`inject_p_in_g_chat`、`inject_g_in_p_chat`、`inject_g_in_g_chat`；其余旧配置移除，不做旧值迁移。
 - 检索改为 `agent_id` + `OR[{"user_id": ...}]`，因为 mem0 的 `user_id: {"in": [...]}` 会返回 400。
 
 ### Breaking

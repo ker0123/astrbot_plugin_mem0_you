@@ -1,10 +1,4 @@
 {
-  "enable": {
-    "description": "enable",
-    "hint": "启用 mem0 长期记忆",
-    "type": "bool",
-    "default": true
-  },
   "mem0_api_url_base": {
     "description": "mem0 API url base",
     "hint": "mem0 服务的地址",
@@ -19,61 +13,9 @@
   },
   "agent_id_prefix": {
     "description": "agent id prefix",
-    "hint": "agent_id 前缀，例如 astrbot:<persona_id>。留空时回退 user_id_prefix。",
+    "hint": "agent_id 前缀，例如 astrbot:<persona_id>。",
     "type": "string",
     "default": "astrbot"
-  },
-  "user_id_prefix": {
-    "description": "user id prefix (legacy)",
-    "hint": "旧配置兼容项；仅当 agent_id_prefix 为空时作为回退。",
-    "type": "string",
-    "default": "astrbot"
-  },
-  "memory_scope": {
-    "description": "memory scope (deprecated)",
-    "hint": "已废弃；v0.4 由私聊/群聊自动决定作用域，此项不再生效。",
-    "type": "string",
-    "options": [
-      "sender",
-      "session"
-    ],
-    "default": "sender"
-  },
-  "group_memory_enabled": {
-    "description": "group memory enabled",
-    "hint": "群聊时是否写入群级记忆（group:G）。",
-    "type": "bool",
-    "default": true
-  },
-  "group_recall_enabled": {
-    "description": "group recall enabled",
-    "hint": "群聊时是否召回当前群的记忆。",
-    "type": "bool",
-    "default": true
-  },
-  "group_memory_limit": {
-    "description": "group memory limit",
-    "hint": "每次注入的群记忆上限。",
-    "type": "int",
-    "default": 2
-  },
-  "personal_memory_limit": {
-    "description": "personal memory limit",
-    "hint": "每次注入的个人记忆上限。",
-    "type": "int",
-    "default": 3
-  },
-  "search_limit": {
-    "description": "search limit",
-    "hint": "单次注入记忆总上限。",
-    "type": "int",
-    "default": 5
-  },
-  "max_scope_nodes": {
-    "description": "max scope nodes",
-    "hint": "单次 OR 查询的节点上限；超出时优先保留身份节点和最近加入的群。",
-    "type": "int",
-    "default": 50
   },
   "search_threshold": {
     "description": "search threshold",
@@ -81,64 +23,34 @@
     "type": "float",
     "default": 0.1
   },
-  "max_memory_chars": {
-    "description": "max memory chars",
-    "hint": "单条记忆最大字符数。",
-    "type": "int",
-    "default": 240
-  },
-  "inject_as_system_prompt": {
-    "description": "inject as system prompt",
-    "hint": "把记忆注入系统提示词；关闭后注入到用户消息前。",
-    "type": "bool",
-    "default": true
-  },
-  "ignore_commands": {
-    "description": "ignore commands",
-    "hint": "忽略以命令前缀开头的消息，避免把管理命令写入记忆。",
-    "type": "bool",
-    "default": true
-  },
-  "identity_db_path": {
-    "description": "identity db path",
-    "hint": "身份图 SQLite 路径；留空则使用插件数据目录下的 identity.db。",
-    "type": "string",
-    "default": ""
-  },
-  "group_member_sync_enabled": {
-    "description": "group member sync enabled",
-    "hint": "是否在群聊中自动同步群成员列表（aiocqhttp 可用）。",
-    "type": "bool",
-    "default": true
-  },
-  "group_sync_ttl": {
-    "description": "group sync ttl",
-    "hint": "群成员同步 TTL（秒）。",
-    "type": "int",
-    "default": 300
-  },
-  "admin_ids": {
-    "description": "admin ids",
-    "hint": "额外管理员 sender_id，逗号或空格分隔；用于 /mem0 link 等图管理命令。",
-    "type": "string",
-    "default": ""
-  },
-  "group_memory_prompt": {
-    "description": "group memory prompt",
-    "hint": "群记忆抽取的 custom instructions；留空使用内置 prompt。",
-    "type": "string",
-    "default": ""
-  },
-  "user_memory_prompt": {
-    "description": "user memory prompt",
-    "hint": "个人记忆抽取的 custom instructions；留空使用内置 prompt。",
-    "type": "string",
-    "default": ""
-  },
-  "request_timeout": {
-    "description": "request timeout",
-    "hint": "mem0 查询请求超时时间（秒）。",
+  "search_timeout": {
+    "description": "search timeout",
+    "hint": "查询 mem0 的超时时间（秒）；写入超时固定为 300 秒。",
     "type": "float",
     "default": 12
+  },
+  "inject_p_in_p_chat": {
+    "description": "personal memories in private chat",
+    "hint": "私聊时注入的个人记忆上限。",
+    "type": "int",
+    "default": 5
+  },
+  "inject_p_in_g_chat": {
+    "description": "personal memories in group chat",
+    "hint": "群聊时注入的发言人个人记忆上限。",
+    "type": "int",
+    "default": 2
+  },
+  "inject_g_in_p_chat": {
+    "description": "group memories in private chat",
+    "hint": "私聊时注入的群记忆上限，所有可见群共享该额度。",
+    "type": "int",
+    "default": 2
+  },
+  "inject_g_in_g_chat": {
+    "description": "group memories in group chat",
+    "hint": "群聊时注入的当前群记忆上限。",
+    "type": "int",
+    "default": 4
   }
 }

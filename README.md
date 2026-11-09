@@ -68,7 +68,7 @@ user_id  = <platform>:user:<sender_id>
 
 小号与群成员由 SQLite 身份图管理，管理员通过 `/mem0 link`、`/mem0 join`、`/mem0 syncgroup` 等命令维护。详见 [`docs/DESIGN-v0.4.md`](docs/DESIGN-v0.4.md)。
 
-旧版 `<user_id_prefix>:<persona>:<scope>` 不再使用；旧数据保留归档，不做自动迁移。
+旧版 `<prefix>:<persona>:<scope>` 不再使用；旧数据保留归档，不做自动迁移。
 
 ## 安装
 
@@ -111,29 +111,15 @@ data/config/astrbot_plugin_mem0_you_config.json
 
 | 配置项 | 默认值 | 说明 |
 | --- | --- | --- |
-| `enable` | `true` | 是否启用插件. |
 | `mem0_api_url_base` | `"https://api.mem0.ai"` | mem0 服务地址. 自托管时填写实际地址. |
 | `mem0_api_key` | `""` | 请求 mem0 使用的 API Key. 请勿提交到公开仓库. |
 | `agent_id_prefix` | `"astrbot"` | `agent_id` 前缀，例如 `astrbot:<persona_id>`. |
-| `user_id_prefix` | `"astrbot"` | 旧配置兼容项；仅当 `agent_id_prefix` 为空时回退. |
-| `memory_scope` | `"sender"` | 已废弃；v0.4 由私聊/群聊自动决定作用域. |
-| `group_memory_enabled` | `true` | 是否写入群级记忆. |
-| `group_recall_enabled` | `true` | 群聊是否召回当前群记忆. |
-| `group_memory_limit` | `2` | 每次注入的群记忆上限. |
-| `personal_memory_limit` | `3` | 每次注入的个人记忆上限. |
-| `search_limit` | `5` | 单次注入记忆总上限. |
-| `max_scope_nodes` | `50` | 单次 OR 查询的节点上限. |
 | `search_threshold` | `0.1` | 检索相关性阈值. |
-| `max_memory_chars` | `240` | 单条注入记忆的最大字符数. |
-| `inject_as_system_prompt` | `true` | 注入到系统提示词; 关闭后注入到用户消息前. |
-| `ignore_commands` | `true` | 忽略以命令前缀开头的消息. |
-| `identity_db_path` | `""` | 身份图 SQLite 路径；留空使用插件数据目录. |
-| `group_member_sync_enabled` | `true` | 是否自动同步群成员列表. |
-| `group_sync_ttl` | `300` | 群成员同步 TTL（秒）. |
-| `admin_ids` | `""` | 额外管理员 sender_id，逗号/空格分隔. |
-| `group_memory_prompt` | `""` | 群记忆抽取 prompt；留空用内置. |
-| `user_memory_prompt` | `""` | 个人记忆抽取 prompt；留空用内置. |
-| `request_timeout` | `12` | 请求 mem0 API 的超时时间, 单位秒. |
+| `search_timeout` | `12` | 查询 mem0 的超时时间, 单位秒; 写入超时固定为 300 秒. |
+| `inject_p_in_p_chat` | `5` | 私聊时注入的个人记忆上限. |
+| `inject_p_in_g_chat` | `2` | 群聊时注入的发言人个人记忆上限. |
+| `inject_g_in_p_chat` | `2` | 私聊时注入的群记忆上限; 所有可见群共享该额度. |
+| `inject_g_in_g_chat` | `4` | 群聊时注入的当前群记忆上限. |
 
 ## 命令
 
@@ -148,7 +134,7 @@ data/config/astrbot_plugin_mem0_you_config.json
 | `/mem0 graph [node]` | 管理员 | 查看身份分量或群成员. |
 | `/mem0 syncgroup` | 管理员 | 强制同步当前群的成员列表. |
 
-管理员判断优先使用 AstrBot 的 `event.is_admin()`；也可以在 `admin_ids` 中额外配置 sender_id。
+管理员判断使用 AstrBot 的 `event.is_admin()`。
 
 ## API 兼容性
 
@@ -233,7 +219,7 @@ Content-Type: application/json
 - API Key 不正确或已失效.
 - `mem0_api_url_base` 填错, 或服务未启动.
 - 服务端返回 4xx/5xx, 查看 AstrBot 后台日志中的状态码和响应内容.
-- 请求超时, 可以适当增大 `request_timeout`.
+- 请求超时, 可以适当增大 `search_timeout`.
 
 写入失败不会影响正常对话, 插件只记录 warning.
 
@@ -246,7 +232,7 @@ mem0 可能异步抽取和合并记忆. 写入接口返回成功后, 新记忆�
 检查:
 
 - 当前消息是否与已有记忆足够接近.
-- `search_limit` 是否太小.
+- `inject_p_in_p_chat`、`inject_p_in_g_chat`、`inject_g_in_p_chat`、`inject_g_in_g_chat` 是否太小.
 - `search_threshold` 是否太高.
 - 当前私聊/群聊 scope 是否正确；`/mem0 status` 会显示 `agent_id`、`speaker`、`group` 和 scope 节点。
 - 小号或群成员关系是否已经用 `/mem0 link`、`/mem0 join`、`/mem0 syncgroup` 建立。

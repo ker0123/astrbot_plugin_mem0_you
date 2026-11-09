@@ -86,7 +86,8 @@ Invalid user_id: cannot contain whitespace.
 - 一次 embedding、一次 pgvector 检索。
 - `agent_id` 是外层 AND，`OR` 内是 user/group 节点。
 - 单节点退回 `{"agent_id": ..., "user_id": node}`。
-- 节点数上限 `max_scope_nodes`（默认 50）。
+- 节点数上限固定为 50（内部常量，不暴露配置），超出时优先保留 identity 和最近加入的群。
+- `top_k` 内部按 `max(10, 当前场景注入上限之和 * 2)` 计算。
 
 ## 5. 写入策略
 
@@ -232,9 +233,32 @@ async def mem0_command(self, event) -> AsyncIterator
 
 ## 8. 配置
 
-新增：`agent_id_prefix`、`group_memory_enabled`、`group_recall_enabled`、`group_memory_limit`、`personal_memory_limit`、`max_scope_nodes`、`identity_db_path`、`group_member_sync_enabled`、`group_sync_ttl`、`admin_ids`、`group_memory_prompt`、`user_memory_prompt`。
+只保留以下 9 项：
 
-兼容：保留 `user_id_prefix` 作为 `agent_id_prefix` 的回退；`memory_scope` 标记废弃。
+| 配置项 | 默认值 | 说明 |
+|---|---|---|
+| `mem0_api_url_base` | `"https://api.mem0.ai"` | mem0 服务地址 |
+| `mem0_api_key` | `""` | mem0 API Key |
+| `agent_id_prefix` | `"astrbot"` | `agent_id` 前缀 |
+| `search_threshold` | `0.1` | 检索相关性阈值 |
+| `search_timeout` | `12` | 查询超时（秒）；写入超时固定 300 秒 |
+| `inject_p_in_p_chat` | `5` | 私聊个人记忆注入上限 |
+| `inject_p_in_g_chat` | `2` | 群聊个人记忆注入上限 |
+| `inject_g_in_p_chat` | `2` | 私聊群记忆注入上限，所有可见群共享 |
+| `inject_g_in_g_chat` | `4` | 群聊当前群记忆注入上限 |
+
+记忆桶按 `user_id` 区分：`*:user:*` 为个人，`*:group:*` 为群。
+
+| 场景 | 个人上限 | 群上限 |
+|---|---|---|
+| 私聊 | `inject_p_in_p_chat` | `inject_g_in_p_chat` |
+| 群聊 | `inject_p_in_g_chat` | `inject_g_in_g_chat` |
+
+- 值为 `0` 表示该桶不注入。
+- 以下行为不再提供配置，固定为：始终启用、始终写群记忆、始终召回当前群、始终注入 `system_prompt`、始终忽略命令消息、只用 `event.is_admin()` 判断管理员。
+- 内部常量：`max_scope_nodes=50`、`max_memory_chars=240`、`group_sync_ttl=300`、写入超时 300 秒。
+- 身份图固定放在插件数据目录下的 `identity.db`。
+- 不迁移旧配置值，也不迁移旧版记忆索引。
 
 ## 9. 命令
 
@@ -249,7 +273,7 @@ async def mem0_command(self, event) -> AsyncIterator
 | `/mem0 graph [node]` | 管理员 | 查看身份分量 / 群成员 |
 | `/mem0 syncgroup` | 管理员 | 强制同步当前群 |
 
-管理员判断：`event.is_admin()` 或 sender 在 `admin_ids` 中。
+管理员判断：`event.is_admin()`。
 
 ## 10. 测试计划
 
@@ -266,5 +290,5 @@ async def mem0_command(self, event) -> AsyncIterator
 1. **群记忆写入分类是最大风险**：图只保证读取隔离，不能阻止把 B 的个人事实写进群记忆；必须靠 prompt 约束和抽查。
 2. **小号传递性**：A-B、B-C 会合并 A/C；如果 B 是共用号，可能误合并。每条边需确认，`link` 后显示分量大小。
 3. **群成员同步依赖平台 API**：aiocqhttp 可用；其他平台失败时只保证当前发言人可见，需要 `/mem0 join` 手工补。
-4. **OR 查询规模**：节点很多时 SQL 变长；`max_scope_nodes` 截断，优先保留 identity 和最近加入的群。
+4. **OR 查询规模**：节点很多时 SQL 变长；内部固定上限 50 截断，优先保留 identity 和最近加入的群。
 5. **群聊召回个人记忆**：这是刻意设计，但必须配合 prompt 护栏，避免主动披露私聊内容。
