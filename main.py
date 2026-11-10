@@ -71,6 +71,7 @@ def _safe_part(value: str) -> str:
     """Normalize one node segment."""
     text = str(value or "").strip()
     if not text:
+        logger.error("mem0 node segment is empty; falling back to 'unknown'")
         return "unknown"
     text = re.sub(r"[:/\s]+", "_", text)
     return text or "unknown"
@@ -317,8 +318,15 @@ class Mem0MemoryPlugin(Star):
             logger.warning("mem0 persona resolve failed: %s", exc)
             return "default", "default"
 
+        if not persona_id:
+            logger.error("mem0 persona_id is empty; falling back to 'default'")
         persona_id = persona_id or "default"
         persona_name = (persona or {}).get("name") or persona_id
+        if not (persona or {}).get("name"):
+            logger.error(
+                "mem0 persona_name is empty for persona_id %s; using persona_id",
+                persona_id,
+            )
         return persona_id, persona_name
 
     def _agent_id(self, persona_id: str) -> str:
@@ -327,23 +335,35 @@ class Mem0MemoryPlugin(Star):
         return f"{_safe_part(prefix)}:{_safe_part(persona_id)}"
 
     def _platform_key(self, event: AstrMessageEvent) -> str:
-        """Return a stable platform key."""
-        for attr in ("get_platform_id", "get_platform_name"):
-            try:
-                raw = getattr(event, attr)()
-            except Exception:
-                raw = ""
-            if raw:
-                return _safe_part(str(raw))
-        return "unknown"
+        """Return the platform type key.
+
+        Only the platform type is used.  Falling back to the adapter instance
+        id makes nodes hard to understand, so an empty name becomes "unknown".
+        """
+        try:
+            raw = event.get_platform_name()
+        except Exception as exc:
+            logger.error("mem0 failed to read platform name: %s", exc)
+            return "unknown"
+        if not raw:
+            logger.error("mem0 platform name is empty; using 'unknown'")
+            return "unknown"
+        return _safe_part(str(raw))
 
     def _speaker_id(self, event: AstrMessageEvent) -> str:
         """Build the speaker's user node."""
+        platform = self._platform_key(event)
         try:
             sid = str(event.get_sender_id() or "").strip()
-        except Exception:
+        except Exception as exc:
+            logger.error("mem0 failed to read sender id: %s", exc)
             sid = ""
-        return _node(self._platform_key(event), "user", sid or "unknown")
+        if not sid:
+            logger.error(
+                "mem0 sender id is empty on platform %s; using 'unknown'",
+                platform,
+            )
+        return _node(platform, "user", sid or "unknown")
 
     def _group_node(self, event: AstrMessageEvent) -> str | None:
         """Build the current group node, or None for private chat."""

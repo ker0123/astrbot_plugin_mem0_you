@@ -21,7 +21,8 @@
 <platform>:group:<group_id>
 ```
 
-- `platform` 优先 `event.get_platform_id()`，回退 `get_platform_name()`。
+- `platform` 使用 `event.get_platform_name()`（平台类型，如 `aiocqhttp`/`telegram`）；取不到时回退 `unknown`，不使用适配器实例 ID。
+- 平台前缀只用于避免不同平台的 UID 冲突，不区分同类型多实例。
 - 片段经过 `_safe_part()`，把 `:`、空白、`/` 替换为 `_`。
 - 节点字符串同时作为 mem0 的 `user_id`。
 

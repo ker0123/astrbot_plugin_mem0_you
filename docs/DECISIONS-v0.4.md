@@ -23,6 +23,9 @@ data/plugin_data/astrbot_plugin_mem0_you/identity.db
 <platform>:group:<group_id>
 ```
 
+- `platform` 使用 `event.get_platform_name()`（平台类型，如 `aiocqhttp`/`telegram`）；取不到时回退 `unknown`，不使用适配器实例 ID。
+- 平台前缀只用于避免不同平台的 UID 冲突，不区分同类型多实例。
+
 | kind | 方向 | 含义 |
 |---|---|---|
 | `alt` | 双向 | 两个账号是同一个人 |

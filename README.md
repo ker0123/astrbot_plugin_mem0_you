@@ -60,6 +60,7 @@ user_id  = <platform>:user:<sender_id>
 
 - `agent_id` 使用稳定的 `persona_id`，不使用会变的显示名。
 - `user_id` 是 agent 记忆中的对象：私聊为个人，群聊为群或发言人。
+- `platform` 使用平台类型（如 `aiocqhttp`、`telegram`）；取不到时回退 `unknown`。前缀只用于避免不同平台的 UID 冲突。
 
 查询范围:
 
@@ -147,6 +148,10 @@ data/config/astrbot_plugin_mem0_you_config.json
 | 跨平台 `user` + `user` | 允许 | 小号可以跨平台 |
 
 `link` / `unlink` 不接受昵称或模糊匹配，必须先通过 `/mem0mng info` 查完整节点。
+
+## TODO
+
+- [ ] 平台标识映射：后续可增加 `platform_id:platform_type -> platform` 的映射表。用户更换适配器后，可以把新旧平台标识映射到同一个稳定前缀，无需迁移记忆库。
 
 ## API 兼容性
 
