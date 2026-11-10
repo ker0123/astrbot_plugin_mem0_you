@@ -152,6 +152,12 @@ data/config/astrbot_plugin_mem0_you_config.json
 ## TODO
 
 - [ ] 平台标识映射：后续可增加 `platform_id:platform_type -> platform` 的映射表。用户更换适配器后，可以把新旧平台标识映射到同一个稳定前缀，无需迁移记忆库。
+- [ ] 用户级 `link` / `unlink`：允许用户自己绑定小号，统一走 `/mem0` 子命令。
+  - 用户 A 发送 `/mem0 link B`，5 分钟内用户 B 发送 `/mem0 link A`，双方确认后建立 `alt` 边；
+  - 用户 A 发送 `/mem0 unlink` 立即解除自己的所有 `alt` 边；
+  - 用户 A 发送 `/mem0 unlink B` 立即解除与 B 的 `alt` 边；
+  - `/mem0 me` 保持原样，继续显示当前用户节点及直接相连的边。
+  - 实现时需要增加双向确认状态、过期清理和防滥用设计。
 
 ## API 兼容性
 
