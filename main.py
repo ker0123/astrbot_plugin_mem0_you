@@ -1,6 +1,6 @@
 """AstrBot mem0 long-term memory plugin.
 
-v0.4 skeleton: this file defines the new function surface and the implementation
+v0.4 skeleton: this file defines the function surface and the implementation
 outline only.  Function bodies intentionally contain step comments instead of
 concrete code until the design is reviewed.
 
@@ -11,6 +11,15 @@ Index model:
 
 Private scope : identity(speaker) + groups(identity)
 Group scope   : current_group + identity(speaker)
+
+Commands:
+  /mem0 me
+  /mem0 group
+  /mem0 persona
+  /mem0mng info <query>
+  /mem0mng link <a> <b>
+  /mem0mng unlink <a> <b>
+  /mem0mng sync
 """
 
 from __future__ import annotations
@@ -40,6 +49,10 @@ OSS_API_PATH_SEARCH = "/search"
 
 ADD_QUEUE_MAXSIZE = 100
 ADD_REQUEST_TIMEOUT = 300
+MAX_SCOPE_NODES = 50
+MAX_MEMORY_CHARS = 240
+GROUP_SYNC_TTL = 300
+GROUP_SYNC_FAILURE_TTL = 60
 
 # mem0 的 prompt 参数是 custom_instructions, 会拼进系统抽取提示;
 # 不需要自己提供 JSON schema。
@@ -110,6 +123,7 @@ class Mem0MemoryPlugin(Star):
         # 3. self.api_type = "v3"。
         # 4. self.identity: IdentityStore | None = None。
         # 5. self._group_sync_at: dict[str, float] = {} (TTL 缓存)。
+        # 6. self._group_sync_tasks: dict[str, asyncio.Task] = {} (in-flight 去重)。
         pass
 
     # 输入: 无
@@ -118,36 +132,28 @@ class Mem0MemoryPlugin(Star):
     #       只禁用记忆功能, 不阻塞 AstrBot 启动
     async def initialize(self) -> None:
         """Detect mem0 API type and open the identity store."""
-        # 1. 未启用则直接返回。
-        # 2. GET /openapi.json; 成功则 api_type="oss"。
-        # 3. data_dir = StarTools.get_data_dir("astrbot_plugin_mem0_you")。
-        # 4. identity_db_path 配置优先; 否则 data_dir / "identity.db"。
-        # 5. 初始化 IdentityStore; 异常时 logger.error 并置 None。
-        # 6. 记录 api_type、db 路径、图统计。
+        # 1. GET /openapi.json; 成功则 api_type="oss"。
+        # 2. data_dir = StarTools.get_data_dir("astrbot_plugin_mem0_you")。
+        # 3. identity 数据库固定为 data_dir / "identity.db"。
+        # 4. 初始化 IdentityStore; 异常时 logger.error 并置 None。
+        # 5. 记录 api_type、db 路径、图统计。
         pass
 
     # 输入: 无
     # 输出: 无
-    # 特性: 取消写队列、关闭 aiohttp session、关闭 identity store;
-    #       每一步都要吞掉取消/关闭异常, 保证卸载流程完整
+    # 特性: 取消后台群同步任务、取消写队列、关闭 aiohttp session、
+    #       关闭 identity store; 每一步都要吞掉取消/关闭异常
     async def terminate(self) -> None:
         """Release background resources."""
-        # 1. 取消 self._add_worker; 捕获 asyncio.CancelledError。
-        # 2. 如果 session 未关闭, await session.close()。
-        # 3. 如果 identity 存在, identity.close()。
+        # 1. 逐个取消 self._group_sync_tasks 中的任务, 并 await 吞掉 CancelledError。
+        # 2. 取消 self._add_worker; 捕获 asyncio.CancelledError。
+        # 3. 如果 session 未关闭, await session.close()。
+        # 4. 如果 identity 存在, identity.close()。
         pass
 
     # ------------------------------------------------------------------
     # Config / HTTP helpers
     # ------------------------------------------------------------------
-
-    # 输入: 无
-    # 输出: bool
-    # 特性: 读 enable, 默认 True
-    def _enabled(self) -> bool:
-        """Return whether the plugin is enabled."""
-        # 1. return bool(self.config.get("enable", True))。
-        pass
 
     # 输入: 配置键、默认值
     # 输出: 配置值
@@ -185,17 +191,6 @@ class Mem0MemoryPlugin(Star):
         # 4. 返回 headers。
         pass
 
-    # 输入: event
-    # 输出: bool
-    # 特性: event.is_admin() 为真, 或 sender_id 在 admin_ids 配置中;
-    #       admin_ids 支持逗号/空白分隔
-    def _is_admin(self, event: AstrMessageEvent) -> bool:
-        """Return whether the sender may run graph admin commands."""
-        # 1. try event.is_admin(); 为真直接返回 True。
-        # 2. 读取 admin_ids; 统一成 set[str]。
-        # 3. return str(event.get_sender_id()) in admin_ids。
-        pass
-
     # 输入: path, payload, 超时秒数
     # 输出: 解析后的 JSON 或文本
     # 特性: 懒创建 aiohttp session; HTTP >= 400 抛 RuntimeError;
@@ -221,6 +216,19 @@ class Mem0MemoryPlugin(Star):
         # 4. 空返回 None; 否则 json.loads, 失败返回原文。
         pass
 
+    # 输入: 是否群聊
+    # 输出: (个人记忆注入上限, 群记忆注入上限)
+    # 特性: 私聊用 inject_p_in_p_chat / inject_g_in_p_chat;
+    #       群聊用 inject_p_in_g_chat / inject_g_in_g_chat;
+    #       负数按 0 处理
+    def _inject_limits(self, is_group: bool) -> tuple[int, int]:
+        """Return the two injection caps for the current chat type."""
+        # 1. is_group 为真: 读取 inject_p_in_g_chat、inject_g_in_g_chat。
+        # 2. 否则读取 inject_p_in_p_chat、inject_g_in_p_chat。
+        # 3. int(...) 后 max(0, value)。
+        # 4. 返回二元组。
+        pass
+
     # ------------------------------------------------------------------
     # Identity / scope
     # ------------------------------------------------------------------
@@ -243,11 +251,10 @@ class Mem0MemoryPlugin(Star):
 
     # 输入: persona_id
     # 输出: agent_id 字符串
-    # 特性: prefix 取 agent_id_prefix, 回退 user_id_prefix, 再回退 "astrbot";
-    #       两部分都过 _safe_part
+    # 特性: prefix 取 agent_id_prefix, 回退 "astrbot"; 两部分都过 _safe_part
     def _agent_id(self, persona_id: str) -> str:
         """Build the agent id for mem0."""
-        # 1. prefix = agent_id_prefix or user_id_prefix or "astrbot"。
+        # 1. prefix = agent_id_prefix or "astrbot"。
         # 2. return f"{_safe_part(prefix)}:{_safe_part(persona_id)}"。
         pass
 
@@ -264,10 +271,11 @@ class Mem0MemoryPlugin(Star):
 
     # 输入: event
     # 输出: 发言人节点 <platform>:user:<sender_id>
-    # 特性: get_sender_id() 优先, 回退 get_session_id(), 再回退 "unknown"
+    # 特性: get_sender_id() 优先; 为空回退 "unknown";
+    #       不使用 get_session_id(), 避免群聊中把群号当用户号
     def _speaker_id(self, event: AstrMessageEvent) -> str:
         """Build the speaker's user node."""
-        # 1. sid = get_sender_id() or get_session_id() or "unknown"。
+        # 1. sid = get_sender_id() or "unknown"。
         # 2. return _node(self._platform_key(event), "user", sid)。
         pass
 
@@ -284,72 +292,114 @@ class Mem0MemoryPlugin(Star):
     # 输入: event
     # 输出: 当前对话应查询的节点列表
     # 特性: 私聊 private_scope(speaker); 群聊 group_scope(group, speaker);
-    #       按 max_scope_nodes 截断; identity 在前, 群在后; 群聊 group 最前
+    #       按 MAX_SCOPE_NODES 截断; identity 在前, 群在后; 群聊 group 最前;
+    #       identity 不可用时至少保留当前群/发言人
     def _scope_nodes(self, event: AstrMessageEvent) -> list[str]:
         """Compute the query scope for the current event."""
         # 1. speaker = _speaker_id(event)。
         # 2. group = _group_node(event)。
-        # 3. identity 存在才计算; 否则返回 [speaker]。
+        # 3. identity 不存在: 群聊返回 [group, speaker], 私聊返回 [speaker]。
         # 4. group 非空: nodes = identity.group_scope(group, speaker)。
         # 5. 否则: nodes = identity.private_scope(speaker)。
-        # 6. limit = max_scope_nodes; 返回 nodes[:limit]。
+        # 6. 返回 nodes[:MAX_SCOPE_NODES]。
         pass
 
     # ------------------------------------------------------------------
     # Group membership sync
     # ------------------------------------------------------------------
 
-    # 输入: event, group 节点, force 是否忽略 TTL
+    # 输入: event, group 节点
     # 输出: 本次写入/确认的成员数量
-    # 特性: TTL 默认 300s; 成功拉取完整列表时 replace_group_members;
-    #       平台不支持/失败时只 add_member(speaker, group) 兜底
-    async def _sync_group_members(
-        self, event: AstrMessageEvent, group: str, force: bool = False
-    ) -> int:
-        """Refresh the member edges of the current group."""
-        # 1. group 为空返回 0。
-        # 2. group_member_sync_enabled 为假: add_member(speaker, group), 返回 1。
-        # 3. 非 force 且 TTL 未到: add_member(speaker, group), 返回 0。
-        # 4. members = await _fetch_group_members(event)。
-        # 5. 非空: replace_group_members(group, members); 更新 TTL; 返回长度。
-        # 6. 空: add_member(speaker, group); 更新短的失败 TTL; 返回 1。
+    # 特性: 这是一次同步执行; 成功拉取完整列表时 replace_group_members;
+    #       失败时只 add_member(speaker, group) 兜底; 供 /mem0mng sync 使用
+    async def _sync_group_members(self, event: AstrMessageEvent, group: str) -> int:
+        """Refresh the member edges of the current group, blocking."""
+        # 1. group 为空或 identity 不存在返回 0。
+        # 2. members = await _fetch_group_members(event, group)。
+        # 3. 非空: replace_group_members(group, members); 更新成功 TTL; 返回长度。
+        # 4. 空: add_member(speaker, group); 更新失败 TTL; 返回 1。
         pass
 
-    # 输入: event
+    # 输入: event, group 节点
+    # 输出: 无
+    # 特性: 群聊请求路径调用; 检查 TTL 和 in-flight 后创建后台任务;
+    #       不阻塞当前 LLM 请求
+    def _schedule_group_sync(self, event: AstrMessageEvent, group: str) -> None:
+        """Schedule a background member sync when the TTL expires."""
+        # 1. group 为空或 identity 不存在直接返回。
+        # 2. group 已在 self._group_sync_tasks 且未完成: 返回。
+        # 3. now - self._group_sync_at.get(group, 0) < GROUP_SYNC_TTL: 返回。
+        # 4. task = asyncio.create_task(self._background_group_sync(event, group))。
+        # 5. 存入 self._group_sync_tasks, 并注册 done 回调清理。
+        pass
+
+    # 输入: event, group 节点
+    # 输出: 无
+    # 特性: 后台执行一次 _sync_group_members; 单群异常只记 warning;
+    #       finally 从 in-flight 表移除自己
+    async def _background_group_sync(self, event: AstrMessageEvent, group: str) -> None:
+        """Run one group sync in the background."""
+        # 1. try: count = await _sync_group_members(event, group)。
+        # 2. logger.debug/info 记录 group 和 count。
+        # 3. except Exception: logger.warning。
+        # 4. finally: self._group_sync_tasks.pop(group, None)。
+        pass
+
+    # 输入: event, group 节点
     # 输出: 成员节点列表; 平台不支持时返回 []
     # 特性: 只对 aiocqhttp 这类暴露 bot.call_action 的适配器有效;
-    #       调 get_group_member_list; 任何异常都只记 debug 并返回 []
-    async def _fetch_group_members(self, event: AstrMessageEvent) -> list[str]:
+    #       调 get_group_member_list; 排除机器人自己; 任何异常都只记 debug 并返回 []
+    async def _fetch_group_members(self, event: AstrMessageEvent, group: str) -> list[str]:
         """Best-effort fetch of the platform's group member list."""
         # 1. bot = getattr(event, "bot", None); 没有 call_action 则返回 []。
-        # 2. gid = event.get_group_id(); 空则返回 []。
+        # 2. raw gid = event.get_group_id(); 空则返回 []。
         # 3. group_id 数字化（能转 int 就转）。
-        # 4. await bot.call_action("get_group_member_list", group_id=...)。
-        # 5. 非 list 返回 []。
-        # 6. 逐项取 user_id, 转成 _node(platform, "user", uid)。
-        # 7. 异常只 logger.debug, 返回 []。
+        # 4. self_id 非空时作为 routing 参数传给 call_action。
+        # 5. await bot.call_action("get_group_member_list", group_id=..., self_id=...)。
+        # 6. 非 list 返回 []。
+        # 7. 逐项取 user_id, 跳过机器人 self_id 和空 id。
+        # 8. 转成 _node(platform, "user", uid)。
+        # 9. 异常只 logger.debug, 返回 []。
+        pass
+
+    # 输入: event, group 节点
+    # 输出: (群名或 None, [(成员节点, 显示名), ...])
+    # 特性: 仅给 /mem0mng info 使用; 优先 event.get_group(), 否则用 bot.call_action;
+    #       群名/成员名只用于本次模糊匹配, 不写入数据库
+    async def _fetch_group_profile(
+        self, event: AstrMessageEvent, group: str
+    ) -> tuple[str | None, list[tuple[str, str]]]:
+        """Fetch current group name and member display names for info."""
+        # 1. group 为空返回 (None, [])。
+        # 2. 取 raw gid、platform、self_id。
+        # 3. 优先 event.get_group(group_id=...): 取 group_name 和 members。
+        # 4. 否则用 bot.call_action("get_group_info"/"get_group_member_list")。
+        # 5. 成员显示名优先 card, 再 nickname; 排除机器人自己。
+        # 6. 转成 (_node(platform, "user", uid), display_name)。
+        # 7. 异常只 logger.debug, 返回已拿到的部分。
         pass
 
     # ------------------------------------------------------------------
     # Search
     # ------------------------------------------------------------------
 
-    # 输入: query, agent_id, 节点列表
+    # 输入: query, agent_id, 节点列表, 是否群聊
     # 输出: 归一化后的结果列表
     # 特性: OSS 一次请求, filters={"agent_id":..., "OR":[{"user_id":...}]};
     #       单节点退回 user_id 标量; V3 逐节点请求后合并;
-    #       top_k = max(10, search_limit * 2)
+    #       top_k = max(10, 当前场景两个注入上限之和 * 2);
+    #       超时使用 search_timeout
     async def _search_memories(
-        self, query: str, agent_id: str, nodes: list[str]
+        self, query: str, agent_id: str, nodes: list[str], is_group: bool
     ) -> list[dict[str, Any]]:
         """Search mem0 for the union of scope nodes."""
         # 1. query 空或 nodes 空: 返回 []。
-        # 2. nodes 去重并截断到 max_scope_nodes。
-        # 3. top_k / threshold 从配置取。
+        # 2. nodes 去重并截断到 MAX_SCOPE_NODES。
+        # 3. 读取阈值、search_timeout、_inject_limits(is_group) 计算 top_k。
         # 4. oss:
         #    - 单节点: filters={"agent_id":..., "user_id": nodes[0]}。
         #    - 多节点: filters={"agent_id":..., "OR":[{"user_id": n} ...]}。
-        #    - POST /search, 超时 request_timeout。
+        #    - POST /search, 超时 search_timeout。
         # 5. v3: 对每个节点 POST /v3/memories/search, 合并 results。
         # 6. return _normalize_results(response)。
         pass
@@ -369,25 +419,29 @@ class Mem0MemoryPlugin(Star):
 
     # 输入: 归一化结果, 当前群节点（私聊为 None）
     # 输出: (群记忆列表, 个人记忆列表)
-    # 特性: user_id == group_node 归群; 其余归个人;
-    #       按 score 降序; 跨来源按文本去重;
-    #       群上限 group_memory_limit, 个人上限 personal_memory_limit,
-    #       总数不超过 search_limit
+    # 特性: 按 user_id 的 :user:/:group: 分桶; 群聊只把当前群算群记忆;
+    #       按 score 降序; 跨来源按文本去重; 群桶先取;
+    #       私聊上限 inject_p_in_p_chat / inject_g_in_p_chat;
+    #       群聊上限 inject_p_in_g_chat / inject_g_in_g_chat
     def _select_memories(
         self, results: list[dict[str, Any]], group_node: str | None
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """Split and cap results into group/personal buckets."""
-        # 1. 按 user_id 分桶。
-        # 2. 各桶按 score 降序。
-        # 3. 用归一化文本做 seen 集合, 先取群再取个人。
-        # 4. 按 group_memory_limit / personal_memory_limit 截断。
-        # 5. 总数超过 search_limit 时截断。
-        # 6. 返回 (group_selected, personal_selected)。
+        # 1. is_group = group_node is not None。
+        # 2. personal_limit, group_limit = _inject_limits(is_group)。
+        # 3. 按 user_id 分桶:
+        #    - 群聊: user_id == group_node 归群, 其余 user 节点归个人。
+        #    - 私聊: 含 ":group:" 的归群, 含 ":user:" 的归个人。
+        # 4. 各桶按 score 降序。
+        # 5. 用归一化文本做 seen 集合, 先取群再取个人。
+        # 6. 按 group_limit / personal_limit 截断。
+        # 7. 返回 (group_selected, personal_selected)。
         pass
 
     # 输入: 群记忆列表, 个人记忆列表, 是否群聊
     # 输出: 注入用的文本块
-    # 特性: 分「本群记忆」「与当前用户相关的记忆」;
+    # 特性: 群聊分「本群记忆」「与当前用户相关的记忆」;
+    #       私聊分「个人记忆」「群记忆」;
     #       保留不可信数据边界;
     #       群聊追加“不要主动披露私聊内容或第三方个人信息”
     def _format_memory_context(
@@ -399,8 +453,8 @@ class Mem0MemoryPlugin(Star):
         """Build the prompt block for retrieved memories."""
         # 1. 两桶都空: 返回 ""。
         # 2. 写 [Long-term memory from mem0] 头和“背景事实”提示。
-        # 3. 有群记忆: 写「本群记忆」+ bullet。
-        # 4. 有个人记忆: 写「与当前用户相关的记忆」+ bullet。
+        # 3. 群聊: 有群记忆写「本群记忆」, 有个人记忆写「与当前用户相关的记忆」。
+        # 4. 私聊: 有个人记忆写「个人记忆」, 有群记忆写「群记忆」。
         # 5. 群聊: 追加隐私护栏。
         # 6. 写 [End long-term memory]。
         pass
@@ -469,43 +523,43 @@ class Mem0MemoryPlugin(Star):
 
     # 输入: 原始文本
     # 输出: 清理后的文本
-    # 特性: 合并空白; 按 max_memory_chars 截断并加省略号
+    # 特性: 合并空白; 按 MAX_MEMORY_CHARS 截断并加省略号
     def _clean_memory_text(self, text: str) -> str:
         """Normalize and truncate one memory string."""
         # 1. re.sub(r"\\s+", " ", text).strip()。
-        # 2. max_chars = max_memory_chars。
+        # 2. max_chars = MAX_MEMORY_CHARS。
         # 3. 超长截断 + "..."。
         pass
 
     # 输入: event, prompt
     # 输出: bool
-    # 特性: 空文本跳过; ignore_commands 为真时跳过命令前缀消息
+    # 特性: 空文本跳过; 始终跳过命令前缀消息
     def _should_skip_prompt(self, event: AstrMessageEvent, prompt: str) -> bool:
         """Return whether this prompt should bypass memory."""
         # 1. prompt 空返回 True。
-        # 2. ignore_commands 为假返回 False。
-        # 3. 读 AstrBot command_prefix; 命中前缀返回 True。
+        # 2. 读 AstrBot command_prefix; 命中前缀返回 True。
+        # 3. 否则返回 False。
         pass
 
     # 输入: event, ProviderRequest
     # 输出: 无
-    # 特性: 请求前钩子; 解析身份 -> 群成员同步 -> 计算 scope ->
+    # 特性: 请求前钩子; 解析身份 -> 后台群同步 -> 计算 scope ->
     #       检索 -> 分桶 -> 注入; 把上下文放进 event.set_extra 供回复钩子复用
     @filter.on_llm_request(priority=20)
     async def inject_mem0_memory(self, event: AstrMessageEvent, req: ProviderRequest) -> None:
         """Inject retrieved memories before the LLM call."""
-        # 1. 未启用 / 无 api_key / 无 identity 则返回。
+        # 1. 无 api_key / 无 identity 则返回。
         # 2. prompt = req.prompt or event.get_message_str(); 跳过空/命令。
         # 3. persona_id, persona_name = await _persona_identity(event, req)。
         # 4. agent_id = _agent_id(persona_id)。
         # 5. speaker = _speaker_id(event); group = _group_node(event)。
-        # 6. group 非空: await _sync_group_members(event, group)。
+        # 6. group 非空: _schedule_group_sync(event, group), 不 await。
         # 7. nodes = _scope_nodes(event)。
-        # 8. event.set_extra(...) 保存 agent/speaker/group/persona/nodes/prompt。
-        # 9. results = await _search_memories(prompt, agent_id, nodes)。
+        # 8. event.set_extra(...) 保存 agent/speaker/group/persona/nodes/prompt/is_group。
+        # 9. results = await _search_memories(prompt, agent_id, nodes, group 非空)。
         # 10. group_mem, personal_mem = _select_memories(results, group)。
         # 11. context = _format_memory_context(...); 为空则返回。
-        # 12. 按 inject_as_system_prompt 注入 system_prompt 或 prompt。
+        # 12. 始终追加到 req.system_prompt。
         pass
 
     # 输入: event, LLMResponse
@@ -515,142 +569,176 @@ class Mem0MemoryPlugin(Star):
     @filter.on_llm_response(priority=20)
     async def record_mem0_memory(self, event: AstrMessageEvent, response: LLMResponse) -> None:
         """Queue the finished turn for mem0 extraction."""
-        # 1. 未启用 / 无 api_key / 无 identity 则返回。
+        # 1. 无 api_key / 无 identity 则返回。
         # 2. user_text = extra prompt or 当前消息; assistant_text = completion_text。
         # 3. 跳过空文本、命令、response.role == "err"。
         # 4. 从 extra 取 persona/speaker/group; 缺失则重新解析。
         # 5. metadata 基础字段: source/platform/persona/speaker/group。
         # 6. 群聊:
-        #    - group_memory_enabled: _add_memory(group, [user, assistant], GROUP_PROMPT,
+        #    - 始终 _add_memory(group, [user, assistant], GROUP_PROMPT,
         #      scope=group)。
-        #    - _add_memory(speaker, [user], USER_PROMPT, scope=group_speaker)。
-        # 7. 私聊: _add_memory(speaker, [user, assistant], USER_PROMPT, scope=private)。
+        #    - 始终 _add_memory(speaker, [user], USER_PROMPT,
+        #      scope=group_speaker)。
+        # 7. 私聊: _add_memory(speaker, [user, assistant], USER_PROMPT,
+        #    scope=private)。
         pass
 
     # ------------------------------------------------------------------
-    # Commands
+    # Node helpers
     # ------------------------------------------------------------------
 
-    # 输入: 原始参数、当前 event
-    # 输出: 用户节点
-    # 特性: 含两个以上冒号视为完整节点; 否则用当前平台补成 user 节点
-    def _parse_user_node(self, arg: str, event: AstrMessageEvent) -> str:
-        """Parse a user node from a command argument."""
-        # 1. arg 含 >=2 个 ":" 时直接返回。
-        # 2. 否则 return _node(platform, "user", arg)。
+    # 输入: 命令行参数
+    # 输出: 完整节点字符串或 None
+    # 特性: 只接受 <platform>:<kind>:<id>; kind 只允许 user/group;
+    #       不接受昵称、模糊匹配或自动补全
+    def _parse_full_node(self, arg: str) -> str | None:
+        """Validate one full graph node."""
+        # 1. arg.strip().split(":")。
+        # 2. 必须正好 3 段且每段非空。
+        # 3. kind 必须是 "user" 或 "group"。
+        # 4. 返回原字符串; 否则 None。
         pass
 
-    # 输入: 原始参数、当前 event
-    # 输出: 群节点
-    # 特性: 含两个以上冒号视为完整节点; 否则用当前平台补成 group 节点
-    def _parse_group_node(self, arg: str, event: AstrMessageEvent) -> str:
-        """Parse a group node from a command argument."""
-        # 1. arg 含 >=2 个 ":" 时直接返回。
-        # 2. 否则 return _node(platform, "group", arg)。
+    # 输入: 完整节点
+    # 输出: "user" / "group"
+    # 特性: 调用方需先通过 _parse_full_node
+    def _node_kind(self, node: str) -> str:
+        """Return the node kind."""
+        # 1. return node.split(":", 2)[1]。
+        pass
+
+    # 输入: 完整节点
+    # 输出: 平台标识
+    # 特性: 调用方需先通过 _parse_full_node
+    def _node_platform(self, node: str) -> str:
+        """Return the node platform."""
+        # 1. return node.split(":", 2)[0]。
+        pass
+
+    # ------------------------------------------------------------------
+    # Member commands
+    # ------------------------------------------------------------------
+
+    # 输入: event
+    # 输出: 当前用户节点
+    # 特性: 群聊只输出节点; 私聊额外输出与该节点直接相连的节点
+    async def _cmd_me(self, event: AstrMessageEvent) -> str:
+        """Build /mem0 me output."""
+        # 1. speaker = _speaker_id(event); lines = [f"节点: {speaker}"]。
+        # 2. 群聊（group 非空）直接返回 lines。
+        # 3. 私聊且 identity 存在: edges = identity.edges_for(speaker)。
+        # 4. 逐条取另一端节点, 去重后追加 f"连接: {node}"。
+        # 5. 返回多行文本。
         pass
 
     # 输入: event
-    # 输出: 多行状态文本
-    # 特性: 显示 agent_id / speaker / group / scope 节点数 / 图统计
-    async def _cmd_status(self, event: AstrMessageEvent) -> str:
-        """Build /mem0 status output."""
-        # 1. 解析 persona_id、agent_id、speaker、group。
-        # 2. nodes = _scope_nodes(event)。
-        # 3. stats = identity.stats()。
-        # 4. 拼多行文本返回。
+    # 输出: 当前群节点
+    # 特性: 仅群聊可用; 只输出完整节点
+    async def _cmd_group(self, event: AstrMessageEvent) -> str:
+        """Build /mem0 group output."""
+        # 1. group = _group_node(event)。
+        # 2. 空则返回“当前为私聊，无群聊节点。”。
+        # 3. 返回 f"节点: {group}"。
         pass
 
-    # 输入: query, event
-    # 输出: 多行检索结果
-    # 特性: 用当前 scope 检索; 标注「群」「个人」; 无结果给提示
-    async def _cmd_search(self, query: str, event: AstrMessageEvent) -> str:
-        """Build /mem0 search output."""
-        # 1. 空 query 返回用法。
-        # 2. 解析 agent_id、group、nodes。
-        # 3. results = await _search_memories(...)。
-        # 4. 分桶并格式化编号列表, 标注来源。
+    # 输入: event
+    # 输出: 当前人格信息
+    # 特性: 显示人格名、persona_id、agent_id
+    async def _cmd_persona(self, event: AstrMessageEvent) -> str:
+        """Build /mem0 persona output."""
+        # 1. persona_id, persona_name = await _persona_identity(event)。
+        # 2. agent_id = _agent_id(persona_id)。
+        # 3. 拼多行文本返回。
         pass
 
-    # 输入: args, event
-    # 输出: 操作结果文本
-    # 特性: 管理员命令; 建立 alt 边; 返回身份分量大小和会合并的群数
-    async def _cmd_link(self, args: list[str], event: AstrMessageEvent) -> str:
-        """Handle /mem0 link."""
-        # 1. 校验管理员和参数数量。
-        # 2. a/b = _parse_user_node(...)。
-        # 3. identity.add_alt(a, b, created_by=sender)。
-        # 4. component = identity.identity_component(a)。
-        # 5. groups = identity.groups_for_members(component)。
-        # 6. 返回预览文本。
-        pass
+    # ------------------------------------------------------------------
+    # Admin commands
+    # ------------------------------------------------------------------
 
-    # 输入: args, event
-    # 输出: 操作结果文本
-    # 特性: 管理员命令; 删除 alt 边; 返回删除是否成功
-    async def _cmd_unlink(self, args: list[str], event: AstrMessageEvent) -> str:
-        """Handle /mem0 unlink."""
-        # 1. 校验管理员和参数数量。
-        # 2. a/b = _parse_user_node(...)。
-        # 3. identity.remove_alt(a, b)。
-        # 4. 返回结果文本。
+    # 输入: 查询词, event
+    # 输出: 候选节点列表文本
+    # 特性: 仅当前群; 模糊匹配群名/成员昵称/群名片;
+    #       名称只用于展示, 不写入数据库; 不做模糊 link
+    async def _cmd_mng_info(self, query: str, event: AstrMessageEvent) -> str:
+        """Build /mem0mng info output."""
+        # 1. query 空返回用法。
+        # 2. group = _group_node(event); 私聊返回“仅群聊可用”。
+        # 3. group_name, members = await _fetch_group_profile(event, group)。
+        # 4. 群名包含 query: 加入 group 节点。
+        # 5. 成员显示名包含 query: 加入对应 user 节点。
+        # 6. 去重, 最多展示 20 个; 无结果给提示。
+        # 7. 输出格式: 名称 + 完整节点。
         pass
 
     # 输入: args, event
     # 输出: 操作结果文本
-    # 特性: 管理员命令; 手工加 member -> group 边
-    async def _cmd_join(self, args: list[str], event: AstrMessageEvent) -> str:
-        """Handle /mem0 join."""
-        # 1. 校验管理员和参数数量。
-        # 2. member = _parse_user_node; group = _parse_group_node。
-        # 3. identity.add_member(member, group, created_by=sender)。
-        # 4. 返回结果文本。
+    # 特性: 只接受完整节点; user+user 建 alt;
+    #       user+group 建 member_of; group+user 自动归一化;
+    #       group+group 拒绝; 跨平台 user+group 拒绝
+    async def _cmd_mng_link(self, args: list[str], event: AstrMessageEvent) -> str:
+        """Handle /mem0mng link."""
+        # 1. 参数必须正好 2 个; 两个都过 _parse_full_node。
+        # 2. group+group: 返回错误。
+        # 3. user+user: add_alt(a, b, created_by=speaker)。
+        #    - component = identity_component(a)。
+        #    - groups = groups_for_members(component)。
+        #    - 返回边类型、分量大小、关联群数。
+        # 4. user+group 或 group+user: 归一化为 user -> group。
+        #    - 平台不同: 返回错误。
+        #    - add_member(user, group, created_by=speaker)。
+        #    - 返回边类型和是否新增。
         pass
 
     # 输入: args, event
     # 输出: 操作结果文本
-    # 特性: 管理员命令; 手工删 member -> group 边
-    async def _cmd_leave(self, args: list[str], event: AstrMessageEvent) -> str:
-        """Handle /mem0 leave."""
-        # 1. 校验管理员和参数数量。
-        # 2. member = _parse_user_node; group = _parse_group_node。
-        # 3. identity.remove_member(member, group)。
-        # 4. 返回结果文本。
-        pass
-
-    # 输入: args, event
-    # 输出: 图信息文本
-    # 特性: 管理员命令; 用户节点显示身份分量和群; 群节点显示成员;
-    #       最多展示 20 个, 避免刷屏
-    async def _cmd_graph(self, args: list[str], event: AstrMessageEvent) -> str:
-        """Handle /mem0 graph."""
-        # 1. 校验管理员。
-        # 2. 无参数时默认当前 speaker / group。
-        # 3. 判断节点类型: group 则 members_of_group, 否则 identity_component + groups。
-        # 4. 拼多行文本, 截断到 20 个。
+    # 特性: 只接受完整节点; 类型归一化规则与 link 相同
+    async def _cmd_mng_unlink(self, args: list[str], event: AstrMessageEvent) -> str:
+        """Handle /mem0mng unlink."""
+        # 1. 参数必须正好 2 个; 两个都过 _parse_full_node。
+        # 2. group+group: 返回错误。
+        # 3. user+user: remove_alt(a, b)。
+        # 4. user+group 或 group+user: 归一化为 user -> group; remove_member。
+        # 5. 返回删除的边类型和是否成功。
         pass
 
     # 输入: event
     # 输出: 同步结果文本
-    # 特性: 管理员命令; 只对当前群生效; force=True 忽略 TTL;
-    #       平台不支持时说明只写入了当前发言人
-    async def _cmd_syncgroup(self, event: AstrMessageEvent) -> str:
-        """Handle /mem0 syncgroup."""
-        # 1. 校验管理员。
-        # 2. group = _group_node(event); 空则返回“仅群聊可用”。
-        # 3. count = await _sync_group_members(event, group, force=True)。
-        # 4. 返回结果文本。
+    # 特性: 仅群聊; 强制忽略 TTL; 同步等待; 返回成员数量
+    async def _cmd_mng_sync(self, event: AstrMessageEvent) -> str:
+        """Handle /mem0mng sync."""
+        # 1. group = _group_node(event); 空则返回“仅群聊可用”。
+        # 2. count = await _sync_group_members(event, group)。
+        # 3. 返回同步结果文本。
         pass
+
+    # ------------------------------------------------------------------
+    # Command dispatch
+    # ------------------------------------------------------------------
 
     # 输入: event
     # 输出: AsyncIterator, yield 文本结果
-    # 特性: 子命令分发; status/search 所有人可用;
-    #       link/unlink/join/leave/graph/syncgroup 仅管理员
+    # 特性: 成员命令; 子命令 me/group/persona; 空子命令视为 me
     @filter.command("mem0")
     async def mem0_command(self, event: AstrMessageEvent) -> AsyncIterator[Any]:
-        """Dispatch /mem0 subcommands."""
+        """Dispatch member /mem0 subcommands."""
         # 1. 取 message_str, split 成 sub 和 args。
-        # 2. 空 sub 视为 status。
-        # 3. 分发到 _cmd_*。
+        # 2. 空 sub 视为 "me"。
+        # 3. 分发到 _cmd_me / _cmd_group / _cmd_persona。
+        # 4. yield event.plain_result(result)。
+        # 5. 未知子命令 yield 用法。
+        yield  # skeleton placeholder
+
+    # 输入: event
+    # 输出: AsyncIterator, yield 文本结果
+    # 特性: 管理员命令; AstrBot 权限过滤; 子命令 info/link/unlink/sync
+    @filter.command("mem0mng")
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    async def mem0mng_command(self, event: AstrMessageEvent) -> AsyncIterator[Any]:
+        """Dispatch admin /mem0mng subcommands."""
+        # 1. 取 message_str, split 成 sub 和 args。
+        # 2. 分发到 _cmd_mng_info / _cmd_mng_link / _cmd_mng_unlink /
+        #    _cmd_mng_sync。
+        # 3. info 使用剩余全部参数拼成 query。
         # 4. yield event.plain_result(result)。
         # 5. 未知子命令 yield 用法。
         yield  # skeleton placeholder

@@ -26,7 +26,7 @@
 - 支持限制注入条数、单条长度和检索阈值, 控制上下文占用.
 - 默认忽略命令消息, 避免把管理命令写入长期记忆.
 - 注入内容带有防提示词注入边界, 要求模型只把记忆当作背景事实.
-- 提供 `/mem0 status` 和 `/mem0 search <query>` 命令.
+- 提供 `/mem0 me`、`/mem0 group`、`/mem0 persona` 命令, 以及 `/mem0mng` 管理员命令.
 - 不依赖额外 pip 包, 复用 AstrBot 内置的 `aiohttp`.
 
 ## 工作原理
@@ -66,7 +66,7 @@ user_id  = <platform>:user:<sender_id>
 - 私聊 A：`identity(A) ∪ groups(identity(A))`，可以回忆 A 本人、A 的小号，以及它们所在的所有群。
 - 群 G 中 A 发言：`{G} ∪ identity(A)`，只回忆当前群和当前发言人，**不扩散到 A 的其他群**。
 
-小号与群成员由 SQLite 身份图管理，管理员通过 `/mem0 link`、`/mem0 join`、`/mem0 syncgroup` 等命令维护。详见 [`docs/DESIGN-v0.4.md`](docs/DESIGN-v0.4.md)。
+小号与群成员由 SQLite 身份图管理，管理员通过 `/mem0mng link`、`/mem0mng unlink`、`/mem0mng sync` 等命令维护。详见 [`docs/DESIGN-v0.4.md`](docs/DESIGN-v0.4.md)。
 
 旧版 `<prefix>:<persona>:<scope>` 不再使用；旧数据保留归档，不做自动迁移。
 
@@ -94,10 +94,10 @@ C:\Users\<你的用户名>\.astrbot\data\plugins\astrbot_plugin_mem0_you\
 4. 在聊天窗口发送:
 
 ```text
-/mem0 status
+/mem0 me
 ```
 
-如果看到 `enabled` 和 `api_key: configured`, 说明插件已经启用.
+如果看到 `节点: <platform>:user:<id>`，说明插件已经加载并识别到当前用户.
 
 ## 配置说明
 
@@ -125,16 +125,28 @@ data/config/astrbot_plugin_mem0_you_config.json
 
 | 命令 | 权限 | 说明 |
 | --- | --- | --- |
-| `/mem0 status` | 所有人 | 查看插件状态、`agent_id`、`speaker`、`group`、scope 节点数和图统计. |
-| `/mem0 search <query>` | 所有人 | 按当前作用域检索记忆，并标注「群 / 个人」来源. |
-| `/mem0 link <a> <b>` | 管理员 | 建立两个账号的小号关系. |
-| `/mem0 unlink <a> <b>` | 管理员 | 删除小号关系. |
-| `/mem0 join <member> <group>` | 管理员 | 手工添加群成员关系. |
-| `/mem0 leave <member> <group>` | 管理员 | 手工删除群成员关系. |
-| `/mem0 graph [node]` | 管理员 | 查看身份分量或群成员. |
-| `/mem0 syncgroup` | 管理员 | 强制同步当前群的成员列表. |
+| `/mem0 me` | 所有人 | 显示当前用户完整节点；私聊额外显示直接相连的节点. |
+| `/mem0 group` | 所有人 | 显示当前群完整节点；私聊不可用. |
+| `/mem0 persona` | 所有人 | 显示当前人格名、`persona_id`、`agent_id`. |
+| `/mem0mng info <query>` | 管理员 | 当前群内模糊匹配群名/昵称/群名片，输出候选节点. |
+| `/mem0mng link <a> <b>` | 管理员 | 只接受完整节点，自动建立 `alt` 或 `member_of`. |
+| `/mem0mng unlink <a> <b>` | 管理员 | 只接受完整节点，自动删除 `alt` 或 `member_of`. |
+| `/mem0mng sync` | 管理员 | 强制同步当前群成员列表. |
 
-管理员判断使用 AstrBot 的 `event.is_admin()`。
+管理员命令 `mem0mng` 使用 AstrBot 的 `PermissionType.ADMIN` 权限过滤。
+
+### link / unlink 类型规则
+
+| a | b | 行为 |
+| --- | --- | --- |
+| `user` | `user` | 建立/删除 `alt` |
+| `user` | `group` | 建立/删除 `member_of` |
+| `group` | `user` | 归一化为 `user -> group` 后处理 |
+| `group` | `group` | 拒绝 |
+| 跨平台 `user` + `group` | 拒绝 | 群成员关系必须同平台 |
+| 跨平台 `user` + `user` | 允许 | 小号可以跨平台 |
+
+`link` / `unlink` 不接受昵称或模糊匹配，必须先通过 `/mem0mng info` 查完整节点。
 
 ## API 兼容性
 
@@ -204,7 +216,7 @@ Content-Type: application/json
 
 ## 故障排查
 
-### `/mem0 status` 显示 `api_key: missing`
+### `mem0_api_key` 未配置
 
 检查插件配置中的 `mem0_api_key` 是否为空, 保存配置后重载插件.
 
@@ -234,8 +246,8 @@ mem0 可能异步抽取和合并记忆. 写入接口返回成功后, 新记忆�
 - 当前消息是否与已有记忆足够接近.
 - `inject_p_in_p_chat`、`inject_p_in_g_chat`、`inject_g_in_p_chat`、`inject_g_in_g_chat` 是否太小.
 - `search_threshold` 是否太高.
-- 当前私聊/群聊 scope 是否正确；`/mem0 status` 会显示 `agent_id`、`speaker`、`group` 和 scope 节点。
-- 小号或群成员关系是否已经用 `/mem0 link`、`/mem0 join`、`/mem0 syncgroup` 建立。
+- 当前私聊/群聊 scope 是否正确；`/mem0 me`、`/mem0 group` 会显示当前节点。
+- 小号或群成员关系是否已经用 `/mem0mng link`、`/mem0mng sync` 建立。
 
 ### 改名后配置没有生效
 

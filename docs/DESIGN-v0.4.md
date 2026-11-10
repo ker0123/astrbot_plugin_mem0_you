@@ -86,7 +86,7 @@ Invalid user_id: cannot contain whitespace.
 - 一次 embedding、一次 pgvector 检索。
 - `agent_id` 是外层 AND，`OR` 内是 user/group 节点。
 - 单节点退回 `{"agent_id": ..., "user_id": node}`。
-- 节点数上限固定为 50（内部常量，不暴露配置），超出时优先保留 identity 和最近加入的群。
+- 节点数上限固定为 50（内部常量，不暴露配置），超出时优先保留 identity 和最近同步的群。
 - `top_k` 内部按 `max(10, 当前场景注入上限之和 * 2)` 计算。
 
 ## 5. 写入策略
@@ -144,7 +144,10 @@ CREATE INDEX IF NOT EXISTS idx_identity_edges_dst_kind
 
 - `alt` 写入时对 `(a, b)` 排序，无向边只存一份。
 - `member_of` 由 `(member, group)` 唯一约束去重。
+- `created_at` 是边最近一次写入时间；群成员整体替换时统一刷新，因此群排序语义是“最近同步优先”。
 - 退群：群成员同步成功后 `DELETE ... WHERE kind='member_of' AND dst=group` 再批量插入；不加 `joined_at/left_at` 字段。
+- 群成员同步在群聊请求路径只检查 TTL 并调度后台任务，不阻塞 LLM 请求；`/mem0mng sync` 才同步等待。
+- 成功 TTL 300 秒，失败 TTL 60 秒；退群成员最多 5 分钟内仍可能可见，属于最终一致性。
 - 单实例放 `data/plugin_data/astrbot_plugin_mem0_you/identity.db`；多实例再换 Postgres。
 
 ## 7. 函数定义
@@ -196,14 +199,18 @@ def _scope_nodes(self, event) -> list[str]
 群成员同步：
 
 ```python
-async def _sync_group_members(self, event, group: str, force: bool = False) -> int
-async def _fetch_group_members(self, event) -> list[str]
+async def _sync_group_members(self, event, group: str) -> int
+def _schedule_group_sync(self, event, group: str) -> None
+async def _background_group_sync(self, event, group: str) -> None
+async def _fetch_group_members(self, event, group: str) -> list[str]
+async def _fetch_group_profile(self, event, group: str) -> tuple[str | None, list[tuple[str, str]]]
 ```
 
 检索：
 
 ```python
-async def _search_memories(self, query: str, agent_id: str, nodes: list[str]) -> list[dict]
+def _inject_limits(self, is_group: bool) -> tuple[int, int]
+async def _search_memories(self, query, agent_id, nodes, is_group: bool) -> list[dict]
 def _normalize_results(self, response) -> list[dict]
 def _select_memories(self, results, group_node) -> tuple[list[dict], list[dict]]
 def _format_memory_context(self, group_memories, personal_memories, is_group) -> str
@@ -229,6 +236,27 @@ async def record_mem0_memory(self, event, response) -> None
 
 @filter.command("mem0")
 async def mem0_command(self, event) -> AsyncIterator
+
+@filter.command("mem0mng")
+@filter.permission_type(filter.PermissionType.ADMIN)
+async def mem0mng_command(self, event) -> AsyncIterator
+```
+
+命令辅助：
+
+```python
+def _parse_full_node(self, arg: str) -> str | None
+def _node_kind(self, node: str) -> str
+def _node_platform(self, node: str) -> str
+
+async def _cmd_me(self, event) -> str
+async def _cmd_group(self, event) -> str
+async def _cmd_persona(self, event) -> str
+
+async def _cmd_mng_info(self, query: str, event) -> str
+async def _cmd_mng_link(self, args: list[str], event) -> str
+async def _cmd_mng_unlink(self, args: list[str], event) -> str
+async def _cmd_mng_sync(self, event) -> str
 ```
 
 ## 8. 配置
@@ -255,8 +283,9 @@ async def mem0_command(self, event) -> AsyncIterator
 | 群聊 | `inject_p_in_g_chat` | `inject_g_in_g_chat` |
 
 - 值为 `0` 表示该桶不注入。
-- 以下行为不再提供配置，固定为：始终启用、始终写群记忆、始终召回当前群、始终注入 `system_prompt`、始终忽略命令消息、只用 `event.is_admin()` 判断管理员。
-- 内部常量：`max_scope_nodes=50`、`max_memory_chars=240`、`group_sync_ttl=300`、写入超时 300 秒。
+- 以下行为不再提供配置，固定为：始终启用、始终写群记忆、始终召回当前群、始终注入 `system_prompt`、始终忽略命令消息。
+- 管理员命令 `mem0mng` 使用 AstrBot 的 `PermissionType.ADMIN`，插件内不再手写 `event.is_admin()`。
+- 内部常量：`MAX_SCOPE_NODES=50`、`MAX_MEMORY_CHARS=240`、`GROUP_SYNC_TTL=300`、写入超时 300 秒。
 - 身份图固定放在插件数据目录下的 `identity.db`。
 - 不迁移旧配置值，也不迁移旧版记忆索引。
 
@@ -264,16 +293,28 @@ async def mem0_command(self, event) -> AsyncIterator
 
 | 命令 | 权限 | 作用 |
 |---|---|---|
-| `/mem0 status` | 所有人 | 显示 agent_id、speaker、group、scope 节点数、图统计 |
-| `/mem0 search <query>` | 所有人 | 按当前 scope 检索，标注群/个人 |
-| `/mem0 link <a> <b>` | 管理员 | 建立小号边 |
-| `/mem0 unlink <a> <b>` | 管理员 | 删除小号边 |
-| `/mem0 join <member> <group>` | 管理员 | 手工加群成员边 |
-| `/mem0 leave <member> <group>` | 管理员 | 手工删群成员边 |
-| `/mem0 graph [node]` | 管理员 | 查看身份分量 / 群成员 |
-| `/mem0 syncgroup` | 管理员 | 强制同步当前群 |
+| `/mem0 me` | 所有人 | 显示当前用户完整节点；私聊额外显示直接相连的节点 |
+| `/mem0 group` | 所有人 | 显示当前群完整节点；私聊不可用 |
+| `/mem0 persona` | 所有人 | 显示当前人格名、`persona_id`、`agent_id` |
+| `/mem0mng info <query>` | 管理员 | 当前群内模糊匹配群名/昵称/群名片，输出候选节点 |
+| `/mem0mng link <a> <b>` | 管理员 | 只接受完整节点，自动建立 `alt` 或 `member_of` |
+| `/mem0mng unlink <a> <b>` | 管理员 | 只接受完整节点，自动删除 `alt` 或 `member_of` |
+| `/mem0mng sync` | 管理员 | 强制同步当前群成员 |
 
-管理员判断：`event.is_admin()`。
+管理员判断使用 AstrBot 的 `@filter.permission_type(filter.PermissionType.ADMIN)`。
+
+### link / unlink 类型规则
+
+| a | b | 行为 |
+|---|---|---|
+| `user` | `user` | 建立/删除 `alt` |
+| `user` | `group` | 建立/删除 `member_of` |
+| `group` | `user` | 归一化为 `user -> group` 后处理 |
+| `group` | `group` | 拒绝 |
+| 跨平台 `user` + `group` | 拒绝 | 群成员关系必须同平台 |
+| 跨平台 `user` + `user` | 允许 | 小号可以跨平台 |
+
+昵称只用于 `/mem0mng info` 的匹配展示；`link` / `unlink` 不接受昵称或模糊匹配。
 
 ## 10. 测试计划
 
@@ -283,12 +324,15 @@ async def mem0_command(self, event) -> AsyncIterator
 4. `replace_group_members` 让退群成员从边表消失。
 5. 私聊召回群记忆；群聊不召回其他群。
 6. A 在群/私聊都查不到 B 的个人记忆。
-7. `/mem0 link` 后小号个人记忆合并，但群聊不合并小号的其他群。
+7. `/mem0mng link` 后小号个人记忆合并，但群聊不合并小号的其他群。
+8. `/mem0mng link` 只接受完整节点；重名昵称不会产生歧义。
+9. `/mem0 me` 私聊显示直接相连节点，群聊只显示当前用户节点。
 
 ## 11. 风险
 
 1. **群记忆写入分类是最大风险**：图只保证读取隔离，不能阻止把 B 的个人事实写进群记忆；必须靠 prompt 约束和抽查。
 2. **小号传递性**：A-B、B-C 会合并 A/C；如果 B 是共用号，可能误合并。每条边需确认，`link` 后显示分量大小。
-3. **群成员同步依赖平台 API**：aiocqhttp 可用；其他平台失败时只保证当前发言人可见，需要 `/mem0 join` 手工补。
-4. **OR 查询规模**：节点很多时 SQL 变长；内部固定上限 50 截断，优先保留 identity 和最近加入的群。
+3. **群成员同步依赖平台 API**：aiocqhttp 可用；其他平台失败时只保证当前发言人可见，需要 `/mem0mng link` 手工补。
+4. **OR 查询规模**：节点很多时 SQL 变长；内部固定上限 50 截断，优先保留 identity 和最近同步的群。
 5. **群聊召回个人记忆**：这是刻意设计，但必须配合 prompt 护栏，避免主动披露私聊内容。
+6. **退群最终一致性**：只靠 300 秒 TTL，退群成员最多可能在 5 分钟内仍被视为可见。

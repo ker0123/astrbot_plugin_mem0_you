@@ -137,6 +137,7 @@ class IdentityStore:
     # 输入: 群节点、完整成员节点列表、可选创建者
     # 输出: int, 写入后的成员数量
     # 特性: 先删该群全部 member_of 边, 再批量插入; 这是退群成员消失的关键;
+    #       created_at 统一写成该群本次同步时间, 因此群排序语义是“最近同步优先”;
     #       调用方必须保证 members 是完整列表, 空列表不要调用
     def replace_group_members(
         self,
@@ -169,11 +170,11 @@ class IdentityStore:
         pass
 
     # 输入: 一组用户节点
-    # 输出: 这些用户能看到的群节点列表, 最近加入的在前
-    # 特性: 只查 member_of 的 src 方向; 用 MAX(created_at) 排序; SQL 参数个数受
-    #       max_scope_nodes 限制
+    # 输出: 这些用户能看到的群节点列表, 最近同步的群在前
+    # 特性: 只查 member_of 的 src 方向; 用 MAX(created_at) 排序;
+    #       created_at 是成员边最近一次被整群同步写入的时间
     def groups_for_members(self, members: Iterable[str]) -> list[str]:
-        """Return groups visible to any member, newest edge first."""
+        """Return groups visible to any member, newest sync first."""
         # 1. 去重、去空。
         # 2. 为空返回 []。
         # 3. 生成占位符, SELECT dst, MAX(created_at) AS last_seen ...
@@ -184,7 +185,7 @@ class IdentityStore:
 
     # 输入: 群节点
     # 输出: 该群当前成员节点列表
-    # 特性: 只用于 /mem0 graph 和调试; 不参与私聊 scope 计算
+    # 特性: 只用于调试; 不参与私聊 scope 计算
     def members_of_group(self, group: str) -> list[str]:
         """Return the members recorded for one group."""
         # 1. 空输入返回 []。
@@ -213,7 +214,7 @@ class IdentityStore:
 
     # 输入: 任意节点
     # 输出: 与该节点直接相连的边列表
-    # 特性: 同时查 src 和 dst, 用于 /mem0 graph 和审计
+    # 特性: 同时查 src 和 dst, 用于 /mem0 me 私聊连接展示和审计
     def edges_for(self, node: str) -> list[Edge]:
         """Return edges touching one node."""
         # 1. SELECT src,dst,kind,created_at,created_by
@@ -223,7 +224,7 @@ class IdentityStore:
 
     # 输入: 无
     # 输出: {"alt": n, "member_of": n}
-    # 特性: 用于 /mem0 status 和健康检查
+    # 特性: 用于健康检查和调试
     def stats(self) -> dict[str, int]:
         """Return edge counts by kind."""
         # 1. SELECT kind, COUNT(*) ... GROUP BY kind。
