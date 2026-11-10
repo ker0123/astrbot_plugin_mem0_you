@@ -1,6 +1,6 @@
 # v0.4 设计：agent_id + 身份图
 
-> 状态：骨架阶段。`main.py` / `identity_store.py` 只包含函数定义、输入输出说明和函数体内的实现流程注释，尚未填入具体实现。
+> 状态：已实现。`main.py` / `identity_store.py` 已填入具体实现，细节决策见 [`DECISIONS-v0.4.md`](DECISIONS-v0.4.md)。
 
 ## 1. 目标
 

@@ -10,7 +10,7 @@
 
 ### Changed
 
-- `main.py` 重写为 v0.4 骨架：函数定义、输入输出注释和函数体内的实现流程注释，具体实现暂未填入。
+- `main.py` 完成 v0.4 主体实现：身份图、作用域检索、四桶注入、后台群同步和命令分发。
 - 记忆索引从 `user_id = prefix:persona:scope` 改为 `agent_id` + `user_id` 分离：
   - `agent_id = <agent_id_prefix>:<persona_id>`。
   - `user_id = <platform>:user:<sender_id>` 或 `<platform>:group:<group_id>`。
@@ -22,7 +22,7 @@
 ### Breaking
 
 - 旧版复合 `user_id` 与新查询不兼容；旧 `memories` 表保留归档，不做自动迁移。
-- 当前 `dev` 分支是骨架，插件在填入实现前不能正常工作。
+- v0.4 仍在 `dev` 分支验证，旧数据不会自动迁移到新索引。
 
 ## [0.3.0] - 2026-11-02
 
