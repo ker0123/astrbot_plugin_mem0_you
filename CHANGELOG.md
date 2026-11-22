@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.4.0-dev] - 2026-11-06
+
+### Added
+
+- 新增 `identity_store.py`：用 SQLite 邻接表保存 `alt`（小号）和 `member_of`（成员 -> 群）两类边。
+- 新增 `docs/DESIGN-v0.4.md`：记录 `agent_id` + 身份图的完整设计、函数定义、查询语法、写入策略和测试计划。
+- 新增管理命令：`/mem0mng info`、`/mem0mng link`、`/mem0mng unlink`、`/mem0mng sync`。
+
+### Changed
+
+- `main.py` 完成 v0.4 主体实现：身份图、作用域检索、四桶注入、后台群同步和命令分发。
+- 记忆索引从 `user_id = prefix:persona:scope` 改为 `agent_id` + `user_id` 分离：
+  - `agent_id = <agent_id_prefix>:<persona_id>`。
+  - `user_id = <platform>:user:<sender_id>` 或 `<platform>:group:<group_id>`。
+- 私聊作用域改为「身份分量 + 所有可见群」；群聊作用域改为「当前群 + 身份分量」，不扩散到发言人的其他群。
+- 配置项收敛为 9 项：`mem0_api_url_base`、`mem0_api_key`、`agent_id_prefix`、`search_threshold`、`search_timeout`、`inject_p_in_p_chat`、`inject_p_in_g_chat`、`inject_g_in_p_chat`、`inject_g_in_g_chat`；其余旧配置移除，不做旧值迁移。
+- 命令拆分为成员命令 `mem0` 和管理员命令 `mem0mng`，管理员权限交给 AstrBot 的 `PermissionType.ADMIN`；移除 `status`、`search`、`join`、`leave`、`graph`、`syncgroup`。
+- 检索改为 `agent_id` + `OR[{"user_id": ...}]`，因为 mem0 的 `user_id: {"in": [...]}` 会返回 400。
+
+### Breaking
+
+- 旧版复合 `user_id` 与新查询不兼容；旧 `memories` 表保留归档，不做自动迁移。
+- v0.4 仍在 `dev` 分支验证，旧数据不会自动迁移到新索引。
+
 ## [0.3.0] - 2026-11-02
 
 ### Changed

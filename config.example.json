@@ -1,13 +1,11 @@
 {
-  "enable": true,
   "mem0_api_url_base": "https://api.mem0.ai",
   "mem0_api_key": "m0-your-api-key-here",
-  "memory_scope": "sender",
-  "user_id_prefix": "astrbot",
-  "search_limit": 5,
+  "agent_id_prefix": "astrbot",
   "search_threshold": 0.1,
-  "max_memory_chars": 240,
-  "inject_as_system_prompt": true,
-  "ignore_commands": true,
-  "request_timeout": 12
+  "search_timeout": 12,
+  "inject_p_in_p_chat": 5,
+  "inject_p_in_g_chat": 2,
+  "inject_g_in_p_chat": 2,
+  "inject_g_in_g_chat": 4
 }

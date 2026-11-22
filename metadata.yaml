@@ -1,6 +1,6 @@
 name: astrbot_plugin_mem0_you
 display_name: mem0-you
 desc: 为 AstrBot 接入自托管 mem0 的长期记忆插件, 兼容官方托管 API
-version: 0.3.0
+version: 0.4.0-dev
 author: Yuk1you, CodeX, ker0123
 repo: https://github.com/ker0123/astrbot_plugin_mem0_you

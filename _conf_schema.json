@@ -1,10 +1,4 @@
 {
-  "enable": {
-    "description": "enable",
-    "hint": "启用 mem0 长期记忆",
-    "type": "bool",
-    "default": true
-  },
   "mem0_api_url_base": {
     "description": "mem0 API url base",
     "hint": "mem0 服务的地址",
@@ -17,56 +11,46 @@
     "type": "string",
     "default": ""
   },
-  "memory_scope": {
-    "description": "memory scope",
-    "hint": "sender - 按发送者 ID 存储记忆, 同一个人在群聊和私聊中共用 (默认); session - 按平台会话分别存储记忆",
-    "type": "string",
-    "options": [
-      "sender",
-      "session"
-    ],
-    "default": "sender"
-  },
-  "user_id_prefix": {
-    "description": "user id prefix",
-    "hint": "用户 ID 前缀, 用以区分记忆来源",
+  "agent_id_prefix": {
+    "description": "agent id prefix",
+    "hint": "agent_id 前缀，例如 astrbot:<persona_id>。",
     "type": "string",
     "default": "astrbot"
   },
-  "search_limit": {
-    "description": "search limit",
-    "hint": "最多注入记忆数量",
-    "type": "int",
-    "default": 5
-  },
   "search_threshold": {
     "description": "search threshold",
-    "hint": "检索相关性阈值",
+    "hint": "检索相关性阈值。",
     "type": "float",
     "default": 0.1
   },
-  "max_memory_chars": {
-    "description": "max memory chars",
-    "hint": "单条记忆最大字符数",
-    "type": "int",
-    "default": 240
-  },
-  "inject_as_system_prompt": {
-    "description": "inject as system prompt",
-    "hint": "把记忆注入系统提示词; 关闭后注入到用户消息前",
-    "type": "bool",
-    "default": true
-  },
-  "ignore_commands": {
-    "description": "ignore commands",
-    "hint": "忽略以命令前缀开头的消息, 避免把管理命令写入记忆",
-    "type": "bool",
-    "default": true
-  },
-  "request_timeout": {
-    "description": "request timeout",
-    "hint": "mem0 请求超时时间 (秒)",
+  "search_timeout": {
+    "description": "search timeout",
+    "hint": "查询 mem0 的超时时间（秒）；写入超时固定为 300 秒。",
     "type": "float",
     "default": 12
+  },
+  "inject_p_in_p_chat": {
+    "description": "personal memories in private chat",
+    "hint": "私聊时注入的个人记忆上限。",
+    "type": "int",
+    "default": 5
+  },
+  "inject_p_in_g_chat": {
+    "description": "personal memories in group chat",
+    "hint": "群聊时注入的发言人个人记忆上限。",
+    "type": "int",
+    "default": 2
+  },
+  "inject_g_in_p_chat": {
+    "description": "group memories in private chat",
+    "hint": "私聊时注入的群记忆上限，所有可见群共享该额度。",
+    "type": "int",
+    "default": 2
+  },
+  "inject_g_in_g_chat": {
+    "description": "group memories in group chat",
+    "hint": "群聊时注入的当前群记忆上限。",
+    "type": "int",
+    "default": 4
   }
 }
