@@ -13,13 +13,19 @@ target, never a springboard that reveals other members' personal memories.
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 import threading
 from collections import deque
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
+
+try:
+    from astrbot.api import logger
+except ImportError:  # pragma: no cover - fallback for standalone tests
+    logger = logging.getLogger(__name__)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS identity_edges (
@@ -38,11 +44,27 @@ CREATE INDEX IF NOT EXISTS idx_identity_edges_src_kind
 
 CREATE INDEX IF NOT EXISTS idx_identity_edges_dst_kind
     ON identity_edges(dst, kind);
+
+CREATE TABLE IF NOT EXISTS link_requests (
+    requester TEXT NOT NULL,
+    target TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    PRIMARY KEY (requester, target)
+);
+
+CREATE INDEX IF NOT EXISTS idx_link_requests_target
+    ON link_requests(target);
+
+CREATE INDEX IF NOT EXISTS idx_link_requests_expires_at
+    ON link_requests(expires_at);
 """
 
 # SQLite builds often default to 999 host parameters.  Chunk IN queries well
 # below the limit so large alt components cannot break groups_for_members().
 _SQL_VAR_CHUNK = 500
+LINK_REQUEST_TTL_MINUTES = 15
+_REQUEST_TS_FORMAT = "%Y-%m-%dT%H-%M-%S"
 
 
 @dataclass(frozen=True)
@@ -54,6 +76,25 @@ class Edge:
     kind: str
     created_at: str
     created_by: str | None = None
+
+
+@dataclass(frozen=True)
+class LinkRequestResult:
+    """Result of submitting a link request."""
+
+    status: str  # "linked" | "pending" | "already_linked" | "invalid"
+    requester: str
+    target: str
+    expires_at: str = ""
+    added_edge: bool = False
+
+
+@dataclass(frozen=True)
+class UnlinkResult:
+    """Result of unlinking two user nodes."""
+
+    removed_edge: bool
+    removed_requests: int
 
 
 class IdentityStore:
@@ -102,6 +143,289 @@ class IdentityStore:
     def _now() -> str:
         """Return an ISO-8601 UTC timestamp."""
         return datetime.now(timezone.utc).isoformat()
+
+    @staticmethod
+    def format_request_time(dt: datetime | None = None) -> str:
+        """Format a UTC timestamp as YYYY-MM-DDThh-mm-ss."""
+        current = dt or datetime.now(timezone.utc)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        else:
+            current = current.astimezone(timezone.utc)
+        return current.strftime(_REQUEST_TS_FORMAT)
+
+    @classmethod
+    def request_expires_at(
+        cls,
+        created_at: datetime | None = None,
+        ttl_minutes: int = LINK_REQUEST_TTL_MINUTES,
+    ) -> str:
+        """Compute the expiration timestamp from message creation time."""
+        base = created_at or datetime.now(timezone.utc)
+        if base.tzinfo is None:
+            base = base.replace(tzinfo=timezone.utc)
+        else:
+            base = base.astimezone(timezone.utc)
+        return cls.format_request_time(base + timedelta(minutes=ttl_minutes))
+
+    # ------------------------------------------------------------------
+    # Link request table (with pre-read/write expiration cleanup)
+    # ------------------------------------------------------------------
+
+    def _purge_expired_link_requests_locked(self, now_ts: str) -> int:
+        """Delete expired link requests inside an existing lock."""
+        cur = self._conn.execute(
+            "DELETE FROM link_requests WHERE expires_at <= ?",
+            (now_ts,),
+        )
+        purged = int(cur.rowcount or 0)
+        if purged > 0:
+            logger.info(
+                "identity_db link_requests purge: removed=%d cutoff=%s",
+                purged,
+                now_ts,
+            )
+        return purged
+
+    def _has_alt_edge_locked(self, a: str, b: str) -> bool:
+        """Check whether a direct alt edge exists between a and b."""
+        src, dst = sorted((a, b))
+        row = self._conn.execute(
+            """
+            SELECT 1 FROM identity_edges
+            WHERE src=? AND dst=? AND kind='alt'
+            LIMIT 1
+            """,
+            (src, dst),
+        ).fetchone()
+        return row is not None
+
+    def request_link(
+        self,
+        requester: str,
+        target: str,
+        expires_at: str,
+        created_by: str | None = None,
+        now_ts: str | None = None,
+    ) -> LinkRequestResult:
+        """Record a link request and establish an alt edge if reverse exists."""
+        req = (requester or "").strip()
+        tgt = (target or "").strip()
+        actor = (created_by or req).strip()
+        exp = (expires_at or "").strip()
+        if not req or not tgt or req == tgt or not exp:
+            return LinkRequestResult(
+                status="invalid",
+                requester=req,
+                target=tgt,
+                expires_at=exp,
+            )
+
+        current_ts = now_ts or self.format_request_time()
+        with self._lock:
+            try:
+                self._purge_expired_link_requests_locked(current_ts)
+
+                if self._has_alt_edge_locked(req, tgt):
+                    self._conn.commit()
+                    logger.info(
+                        "identity_db link_requests skip_existing_alt: "
+                        "requester=%s target=%s actor=%s",
+                        req,
+                        tgt,
+                        actor,
+                    )
+                    return LinkRequestResult(
+                        status="already_linked",
+                        requester=req,
+                        target=tgt,
+                        expires_at=exp,
+                    )
+
+                self._conn.execute(
+                    """
+                    INSERT INTO link_requests
+                        (requester, target, expires_at, created_by)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(requester, target) DO UPDATE SET
+                        expires_at = excluded.expires_at,
+                        created_by = excluded.created_by
+                    """,
+                    (req, tgt, exp, actor),
+                )
+                logger.info(
+                    "identity_db link_requests upsert: "
+                    "requester=%s target=%s expires_at=%s created_by=%s",
+                    req,
+                    tgt,
+                    exp,
+                    actor,
+                )
+
+                reverse = self._conn.execute(
+                    """
+                    SELECT expires_at, created_by FROM link_requests
+                    WHERE requester=? AND target=?
+                    LIMIT 1
+                    """,
+                    (tgt, req),
+                ).fetchone()
+
+                if reverse is None:
+                    self._conn.commit()
+                    return LinkRequestResult(
+                        status="pending",
+                        requester=req,
+                        target=tgt,
+                        expires_at=exp,
+                    )
+
+                src, dst = sorted((req, tgt))
+                edge_cur = self._conn.execute(
+                    """
+                    INSERT OR IGNORE INTO identity_edges
+                        (src, dst, kind, created_at, created_by)
+                    VALUES (?, ?, 'alt', ?, ?)
+                    """,
+                    (src, dst, self._now(), actor),
+                )
+                added_edge = (edge_cur.rowcount or 0) > 0
+                del_cur = self._conn.execute(
+                    """
+                    DELETE FROM link_requests
+                    WHERE (requester=? AND target=?)
+                       OR (requester=? AND target=?)
+                    """,
+                    (req, tgt, tgt, req),
+                )
+                self._conn.commit()
+                logger.info(
+                    "identity_db link_requests matched_alt: "
+                    "src=%s dst=%s added_edge=%s cleared_requests=%d created_by=%s",
+                    src,
+                    dst,
+                    added_edge,
+                    int(del_cur.rowcount or 0),
+                    actor,
+                )
+                return LinkRequestResult(
+                    status="linked",
+                    requester=req,
+                    target=tgt,
+                    expires_at=exp,
+                    added_edge=added_edge,
+                )
+            except sqlite3.Error:
+                self._conn.rollback()
+                raise
+
+    def unlink_alt(
+        self,
+        a: str,
+        b: str,
+        *,
+        clear_reverse: bool = False,
+        actor: str | None = None,
+        now_ts: str | None = None,
+    ) -> UnlinkResult:
+        """Remove an alt edge and clear pending link requests."""
+        node_a = (a or "").strip()
+        node_b = (b or "").strip()
+        if not node_a or not node_b or node_a == node_b:
+            return UnlinkResult(removed_edge=False, removed_requests=0)
+
+        current_ts = now_ts or self.format_request_time()
+        src, dst = sorted((node_a, node_b))
+        by_actor = (actor or node_a).strip()
+
+        with self._lock:
+            try:
+                self._purge_expired_link_requests_locked(current_ts)
+
+                if clear_reverse:
+                    req_cur = self._conn.execute(
+                        """
+                        DELETE FROM link_requests
+                        WHERE (requester=? AND target=?)
+                           OR (requester=? AND target=?)
+                        """,
+                        (node_a, node_b, node_b, node_a),
+                    )
+                else:
+                    req_cur = self._conn.execute(
+                        """
+                        DELETE FROM link_requests
+                        WHERE requester=? AND target=?
+                        """,
+                        (node_a, node_b),
+                    )
+                removed_requests = int(req_cur.rowcount or 0)
+
+                edge_cur = self._conn.execute(
+                    """
+                    DELETE FROM identity_edges
+                    WHERE src=? AND dst=? AND kind='alt'
+                    """,
+                    (src, dst),
+                )
+                removed_edge = (edge_cur.rowcount or 0) > 0
+                self._conn.commit()
+                logger.info(
+                    "identity_db unlink_alt: src=%s dst=%s removed_edge=%s "
+                    "removed_requests=%d clear_reverse=%s actor=%s",
+                    src,
+                    dst,
+                    removed_edge,
+                    removed_requests,
+                    clear_reverse,
+                    by_actor,
+                )
+                return UnlinkResult(
+                    removed_edge=removed_edge,
+                    removed_requests=removed_requests,
+                )
+            except sqlite3.Error:
+                self._conn.rollback()
+                raise
+
+    def list_link_requests(
+        self,
+        node: str | None = None,
+        now_ts: str | None = None,
+    ) -> list[dict[str, str]]:
+        """Purge expired requests and return active link requests."""
+        current_ts = now_ts or self.format_request_time()
+        target_node = (node or "").strip()
+        with self._lock:
+            self._purge_expired_link_requests_locked(current_ts)
+            self._conn.commit()
+            if target_node:
+                rows = self._conn.execute(
+                    """
+                    SELECT requester, target, expires_at, created_by
+                    FROM link_requests
+                    WHERE requester=? OR target=?
+                    ORDER BY expires_at ASC, requester ASC, target ASC
+                    """,
+                    (target_node, target_node),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    """
+                    SELECT requester, target, expires_at, created_by
+                    FROM link_requests
+                    ORDER BY expires_at ASC, requester ASC, target ASC
+                    """
+                ).fetchall()
+        return [
+            {
+                "requester": row["requester"],
+                "target": row["target"],
+                "expires_at": row["expires_at"],
+                "created_by": row["created_by"],
+            }
+            for row in rows
+        ]
 
     # ------------------------------------------------------------------
     # Edge writes
