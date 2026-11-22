@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from astrbot.api import logger
@@ -56,6 +57,45 @@ class Mem0Commands:
         """Return the node platform."""
         return node.split(":", 2)[0]
 
+    def _parse_user_node(self, arg: str) -> str | None:
+        """Validate one full user graph node."""
+        node = self._parse_full_node(arg)
+        if not node or self._node_kind(node) != "user":
+            return None
+        return node
+
+    def _event_created_at(self, event: AstrMessageEvent) -> datetime:
+        """Extract UTC message creation time from event, falling back to now."""
+        raw = getattr(getattr(event, "message_obj", None), "timestamp", None)
+        if raw is None:
+            raw = getattr(event, "timestamp", None)
+        if isinstance(raw, datetime):
+            if raw.tzinfo is None:
+                return raw.replace(tzinfo=timezone.utc)
+            return raw.astimezone(timezone.utc)
+        if isinstance(raw, (int, float)) and raw > 0:
+            ts = float(raw)
+            if ts > 1e12:
+                ts /= 1000.0
+            try:
+                return datetime.fromtimestamp(ts, tz=timezone.utc)
+            except (OverflowError, OSError, ValueError):
+                pass
+        return datetime.now(timezone.utc)
+
+    def _format_alt_summary(self, state: str, a: str, b: str) -> str:
+        """Format alt-edge status summary."""
+        identity = self.plugin.identity
+        if identity is None:
+            return f"{state} alt 边: {a} <-> {b}"
+        component = identity.identity_component(a)
+        groups = identity.groups_for_members(component)
+        return (
+            f"{state} alt 边: {a} <-> {b}\n"
+            f"身份分量: {len(component)}\n"
+            f"关联群: {len(groups)}"
+        )
+
     # ------------------------------------------------------------------
     # Member commands
     # ------------------------------------------------------------------
@@ -99,6 +139,77 @@ class Mem0Commands:
             f"persona_id: {persona_id}\n"
             f"agent_id: {self.plugin.agent_id(persona_id)}"
         )
+
+    async def _cmd_link(
+        self, args: list[str], event: AstrMessageEvent
+    ) -> str:
+        """Handle /mem0 link <b>."""
+        if len(args) != 1:
+            return "用法: /mem0 link <b>"
+        b = self._parse_user_node(args[0])
+        if not b:
+            return "只接受完整用户节点: <platform>:user:<id>"
+        if self.plugin.identity is None:
+            return "身份图未初始化。"
+
+        a = self.plugin.speaker_id(event)
+        if a == b:
+            return "不能连接同一个节点。"
+
+        msg_dt = self._event_created_at(event)
+        now_ts = self.plugin.identity.format_request_time(msg_dt)
+        expires_at = self.plugin.identity.request_expires_at(msg_dt)
+
+        res = self.plugin.identity.request_link(
+            a,
+            b,
+            expires_at,
+            created_by=a,
+            now_ts=now_ts,
+        )
+        if res.status == "already_linked":
+            return self._format_alt_summary("已存在", a, b)
+        if res.status == "linked":
+            state = "新增" if res.added_edge else "已存在"
+            return self._format_alt_summary(state, a, b)
+        if res.status == "pending":
+            return (
+                f"已发起连接请求: {a} -> {b}\n"
+                f"有效期至(UTC): {res.expires_at}\n"
+                f"请让对方在有效期内执行: /mem0 link {a}"
+            )
+        return "连接请求无效。"
+
+    async def _cmd_unlink(
+        self, args: list[str], event: AstrMessageEvent
+    ) -> str:
+        """Handle /mem0 unlink <b>."""
+        if len(args) != 1:
+            return "用法: /mem0 unlink <b>"
+        b = self._parse_user_node(args[0])
+        if not b:
+            return "只接受完整用户节点: <platform>:user:<id>"
+        if self.plugin.identity is None:
+            return "身份图未初始化。"
+
+        a = self.plugin.speaker_id(event)
+        if a == b:
+            return "不能解除同一个节点的关系。"
+
+        msg_dt = self._event_created_at(event)
+        now_ts = self.plugin.identity.format_request_time(msg_dt)
+        res = self.plugin.identity.unlink_alt(
+            a,
+            b,
+            clear_reverse=False,
+            actor=a,
+            now_ts=now_ts,
+        )
+        if res.removed_edge:
+            return f"已删除 alt 边: {a} <-> {b}"
+        if res.removed_requests > 0:
+            return f"已撤回连接请求: {a} -> {b}"
+        return f"未找到 alt 边或待确认请求: {a} <-> {b}"
 
     # ------------------------------------------------------------------
     # Admin commands
@@ -144,86 +255,76 @@ class Mem0Commands:
     async def _cmd_mng_link(
         self, args: list[str], event: AstrMessageEvent
     ) -> str:
-        """Handle /mem0mng link."""
+        """Handle /mem0mng link <a> <b> via two-step request matching."""
         if len(args) != 2:
             return "用法: /mem0mng link <a> <b>"
-        a = self._parse_full_node(args[0])
-        b = self._parse_full_node(args[1])
+        a = self._parse_user_node(args[0])
+        b = self._parse_user_node(args[1])
         if not a or not b:
-            return "只接受完整节点: <platform>:<user|group>:<id>"
+            return "只接受完整用户节点: <platform>:user:<id>"
         if self.plugin.identity is None:
             return "身份图未初始化。"
-
-        kind_a = self._node_kind(a)
-        kind_b = self._node_kind(b)
-        if kind_a == "group" and kind_b == "group":
-            return "不能连接两个群节点。"
         if a == b:
             return "不能连接同一个节点。"
 
         created_by = self.plugin.speaker_id(event)
+        msg_dt = self._event_created_at(event)
+        now_ts = self.plugin.identity.format_request_time(msg_dt)
+        expires_at = self.plugin.identity.request_expires_at(msg_dt)
 
-        if kind_a == "user" and kind_b == "user":
-            added = self.plugin.identity.add_alt(a, b, created_by=created_by)
-            component = self.plugin.identity.identity_component(a)
-            groups = self.plugin.identity.groups_for_members(component)
-            state = "新增" if added else "已存在"
-            return (
-                f"{state} alt 边: {a} <-> {b}\n"
-                f"身份分量: {len(component)}\n"
-                f"关联群: {len(groups)}"
-            )
-
-        if kind_a == "user":
-            user, group = a, b
-        else:
-            user, group = b, a
-
-        if self._node_platform(user) != self._node_platform(group):
-            return "用户与群必须属于同一平台。"
-
-        added = self.plugin.identity.add_member(
-            user, group, created_by=created_by
+        res1 = self.plugin.identity.request_link(
+            a,
+            b,
+            expires_at,
+            created_by=created_by,
+            now_ts=now_ts,
         )
-        state = "新增" if added else "已存在"
-        return f"{state} member_of 边: {user} -> {group}"
+        if res1.status == "already_linked":
+            return self._format_alt_summary("已存在", a, b)
+        if res1.status == "linked":
+            state = "新增" if res1.added_edge else "已存在"
+            return self._format_alt_summary(state, a, b)
+
+        res2 = self.plugin.identity.request_link(
+            b,
+            a,
+            expires_at,
+            created_by=created_by,
+            now_ts=now_ts,
+        )
+        state = "新增" if res2.added_edge else "已存在"
+        return self._format_alt_summary(state, a, b)
 
     async def _cmd_mng_unlink(
         self, args: list[str], event: AstrMessageEvent
     ) -> str:
-        """Handle /mem0mng unlink."""
+        """Handle /mem0mng unlink <a> <b>."""
         if len(args) != 2:
             return "用法: /mem0mng unlink <a> <b>"
-        a = self._parse_full_node(args[0])
-        b = self._parse_full_node(args[1])
+        a = self._parse_user_node(args[0])
+        b = self._parse_user_node(args[1])
         if not a or not b:
-            return "只接受完整节点: <platform>:<user|group>:<id>"
+            return "只接受完整用户节点: <platform>:user:<id>"
         if self.plugin.identity is None:
             return "身份图未初始化。"
-
-        kind_a = self._node_kind(a)
-        kind_b = self._node_kind(b)
-        if kind_a == "group" and kind_b == "group":
-            return "不能解除两个群节点之间的关系。"
         if a == b:
             return "不能解除同一个节点的关系。"
 
-        if kind_a == "user" and kind_b == "user":
-            removed = self.plugin.identity.remove_alt(a, b)
-            state = "已删除" if removed else "未找到"
-            return f"{state} alt 边: {a} <-> {b}"
-
-        if kind_a == "user":
-            user, group = a, b
-        else:
-            user, group = b, a
-
-        if self._node_platform(user) != self._node_platform(group):
-            return "用户与群必须属于同一平台。"
-
-        removed = self.plugin.identity.remove_member(user, group)
-        state = "已删除" if removed else "未找到"
-        return f"{state} member_of 边: {user} -> {group}"
+        actor = self.plugin.speaker_id(event)
+        msg_dt = self._event_created_at(event)
+        now_ts = self.plugin.identity.format_request_time(msg_dt)
+        res = self.plugin.identity.unlink_alt(
+            a,
+            b,
+            clear_reverse=True,
+            actor=actor,
+            now_ts=now_ts,
+        )
+        if res.removed_edge:
+            return f"已删除 alt 边: {a} <-> {b}"
+        if res.removed_requests > 0:
+            return f"已清理待确认请求: {a} <-> {b}"
+        return f"未找到 alt 边: {a} <-> {b}"
 
     async def _cmd_mng_sync(self, event: AstrMessageEvent) -> str:
         """Handle /mem0mng sync."""
@@ -242,14 +343,21 @@ class Mem0Commands:
 
     async def handle_mem0(self, event: AstrMessageEvent) -> str:
         """Dispatch member /mem0 subcommands."""
-        sub, _args = _split_command(event.get_message_str() or "")
+        sub, args = _split_command(event.get_message_str() or "")
         if sub in ("", "me"):
             return await self._cmd_me(event)
         if sub == "group":
             return await self._cmd_group(event)
         if sub == "persona":
             return await self._cmd_persona(event)
-        return "用法: /mem0 me | /mem0 group | /mem0 persona"
+        if sub == "link":
+            return await self._cmd_link(args, event)
+        if sub == "unlink":
+            return await self._cmd_unlink(args, event)
+        return (
+            "用法: /mem0 me | /mem0 group | /mem0 persona | "
+            "/mem0 link <b> | /mem0 unlink <b>"
+        )
 
     async def handle_mem0mng(self, event: AstrMessageEvent) -> str:
         """Dispatch admin /mem0mng subcommands."""
