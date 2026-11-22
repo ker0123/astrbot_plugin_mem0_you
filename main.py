@@ -12,6 +12,8 @@ Commands:
   /mem0 me
   /mem0 group
   /mem0 persona
+  /mem0 link <b>
+  /mem0 unlink <b>
   /mem0mng info <query>
   /mem0mng link <a> <b>
   /mem0mng unlink <a> <b>

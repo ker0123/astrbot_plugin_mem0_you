@@ -128,9 +128,11 @@ data/config/astrbot_plugin_mem0_you_config.json
 | `/mem0 me` | 所有人 | 显示当前用户完整节点；私聊额外显示直接相连的节点. |
 | `/mem0 group` | 所有人 | 显示当前群完整节点；私聊不可用. |
 | `/mem0 persona` | 所有人 | 显示当前人格名、`persona_id`、`agent_id`. |
+| `/mem0 link <b>` | 所有人 | 发起或确认与目标用户 `b` 的 `alt` 连接请求（有效期 15 分钟）. |
+| `/mem0 unlink <b>` | 所有人 | 单方面解除与目标用户 `b` 的 `alt` 边（或撤回待确认请求）. |
 | `/mem0mng info <query>` | 管理员 | 当前群内模糊匹配群名/昵称/群名片，输出候选节点. |
-| `/mem0mng link <a> <b>` | 管理员 | 只接受完整节点，自动建立 `alt` 或 `member_of`. |
-| `/mem0mng unlink <a> <b>` | 管理员 | 只接受完整节点，自动删除 `alt` 或 `member_of`. |
+| `/mem0mng link <a> <b>` | 管理员 | 只接受完整用户节点，通过请求匹配建立 `alt` 边. |
+| `/mem0mng unlink <a> <b>` | 管理员 | 只接受完整用户节点，删除 `alt` 边并清理待确认请求. |
 | `/mem0mng sync` | 管理员 | 强制同步当前群成员列表. |
 
 管理员命令 `mem0mng` 使用 AstrBot 的 `PermissionType.ADMIN` 权限过滤。
@@ -139,24 +141,17 @@ data/config/astrbot_plugin_mem0_you_config.json
 
 | a | b | 行为 |
 | --- | --- | --- |
-| `user` | `user` | 建立/删除 `alt` |
-| `user` | `group` | 建立/删除 `member_of` |
-| `group` | `user` | 归一化为 `user -> group` 后处理 |
+| `user` | `user` | 建立/删除 `alt`（允许跨平台小号） |
+| `user` | `group` | 拒绝（群成员关系仅由真实群同步维护） |
+| `group` | `user` | 拒绝 |
 | `group` | `group` | 拒绝 |
-| 跨平台 `user` + `group` | 拒绝 | 群成员关系必须同平台 |
-| 跨平台 `user` + `user` | 允许 | 小号可以跨平台 |
 
-`link` / `unlink` 不接受昵称或模糊匹配，必须先通过 `/mem0mng info` 查完整节点。
+`link` / `unlink` 不接受昵称或模糊匹配，只接受完整用户节点（`<platform>:user:<id>`）。
 
 ## TODO
 
 - [ ] 平台标识映射：后续可增加 `platform_id:platform_type -> platform` 的映射表。用户更换适配器后，可以把新旧平台标识映射到同一个稳定前缀，无需迁移记忆库。
-- [ ] 用户级 `link` / `unlink`：允许用户自己绑定小号，统一走 `/mem0` 子命令。
-  - 用户 A 发送 `/mem0 link B`，5 分钟内用户 B 发送 `/mem0 link A`，双方确认后建立 `alt` 边；
-  - 用户 A 发送 `/mem0 unlink` 立即解除自己的所有 `alt` 边；
-  - 用户 A 发送 `/mem0 unlink B` 立即解除与 B 的 `alt` 边；
-  - `/mem0 me` 保持原样，继续显示当前用户节点及直接相连的边。
-  - 实现时需要增加双向确认状态、过期清理和防滥用设计。
+- [x] 用户级 `link` / `unlink`：允许用户自己绑定小号，统一走 `/mem0` 子命令（双向 15 分钟请求确认）。
 
 ## API 兼容性
 
